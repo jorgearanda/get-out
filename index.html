@@ -38,6 +38,17 @@
   .seg button + button { border-left: 1px solid #344055; }
   .seg button.on { background: #2c5a52; color: #f0f4f8; }
   body.hide-ui .panel { display: none; }
+  .tune-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+    margin: -4px 0 8px; padding: 2px 0; background: none; border: 0; border-radius: 4px; color: #e9dcc2;
+    font-weight: 600; text-align: left;
+  }
+  .tune-head:hover { background: none; color: #fff; }
+  .tune-head .chev { display: inline-block; color: #7d889b; transition: transform .15s; }
+  #tune.collapsed { width: auto; padding-bottom: 8px; }
+  #tune.collapsed .tune-head { margin-bottom: 0; }
+  #tune.collapsed .chev { transform: rotate(-90deg); }
+  #tune.collapsed #tune-body { display: none; }
 </style>
 </head>
 <body>
@@ -51,12 +62,18 @@
     <li><kbd>Q</kbd><kbd>E</kbd> or <kbd>←</kbd><kbd>→</kbd> turn gaze (keyboard)</li>
     <li><kbd>X</kbd> press against / let go of the nearest wall</li>
     <li><kbd>C</kbd> crawl / stand up</li>
+    <li><kbd>L</kbd> lantern on / off</li>
     <li><b>Scroll</b> zoom</li>
     <li><kbd>R</kbd> new dungeon &nbsp; <kbd>H</kbd> hide panels</li>
+    <li><kbd>T</kbd> show/hide settings</li>
   </ul>
 </div>
 
 <div id="tune" class="panel">
+  <button id="tune-toggle" class="tune-head" aria-expanded="true" aria-controls="tune-body" title="Show or hide the settings (T)">
+    <span><span class="chev">▾</span> Settings</span><kbd>T</kbd>
+  </button>
+  <div id="tune-body">
   <div id="sliders"></div>
   <div class="row">
     <span class="name">Lower walls in the way <kbd>V</kbd></span>
@@ -67,6 +84,10 @@
     </div>
   </div>
   <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
+    <input id="lantern" type="checkbox" style="grid-column:auto; width:auto; margin:0">
+    <span class="name">Carry a lantern <kbd>L</kbd></span>
+  </label>
+  <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
     <input id="reveal" type="checkbox" style="grid-column:auto; width:auto; margin:0">
     <span class="name">Reveal unexplored areas</span>
   </label>
@@ -75,6 +96,7 @@
     <span class="name">Show vision polygon</span>
   </label>
   <div class="foot"><span>seed <span id="seed"></span> · <span id="fps"></span></span><button id="regen">New dungeon</button></div>
+  </div>
 </div>
 
 <script src="src/dungeon.js"></script>

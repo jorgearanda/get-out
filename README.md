@@ -2,9 +2,10 @@
 
 A first look at the core feel of a stealth roguelike: a diagonal (isometric) view of a
 grid-based dungeon, free movement within the grid, and a **cone of sight** you aim
-separately from where you walk. Only what the character is looking at is drawn in full.
-Places they've explored but can't see right now are drawn in outline. Places they've
-never seen aren't drawn at all.
+separately from where you walk. Sight and light are separate: the cone decides what you
+see *now* (versus what you remember), while torches, braziers and an optional lantern
+decide how much there is to see. Places they've explored but can't see right now are
+drawn in outline. Places they've never seen aren't drawn at all.
 
 ## Run it
 
@@ -28,9 +29,11 @@ and visit http://localhost:8765.
 | Scroll wheel | Zoom |
 | `X` | Press against the nearest wall bordering your square, or let go |
 | `C` | Crawl, or stand back up |
+| `L` | Light or put out your lantern |
 | `V` | Cycle wall cutaway mode (Off / Near you / In sight) |
 | `R` | Generate a new dungeon |
 | `H` | Hide/show the panels |
+| `T` | Fold/unfold the settings panel |
 | Gamepad | Left stick moves, right stick looks (twin-stick) |
 
 **Three ways to move**, each with its own pose:
@@ -51,18 +54,39 @@ and visit http://localhost:8765.
   - `X` lets go. Moving straight away from the wall also lets go, but only after 0.3 s of
     resistance (the body eases off the wall a little meanwhile).
 
+**Light and sight.** The dungeon is dark apart from its light sources: braziers in some
+rooms, torches on some walls, and a lantern you can carry (`L`). About a third of the rooms
+have no light at all. What you see depends on both:
+
+| | In your sight | Out of sight |
+|---|---|---|
+| **Lit** | Full colour and detail, live | Remembered outline |
+| **Dark, close** (within 2.6 tiles) | Cool contour lines of edges and shapes, no colour | Remembered outline |
+| **Dark, further away** | Nothing new; remembered outlines stay | Remembered outline |
+
+So a lit doorway at the far end of a dark corridor shows up clearly, while the corridor in
+between stays blank until you're close. Things only count as explored once you could
+actually make them out: lit well enough, or close enough to see in the dark. Torches and
+braziers light themselves, so you notice them whenever they're in view. The character is
+lit like everything else, and keeps a faint cool outline so you can always find them. The
+lantern lights a warm pool about 4 tiles across around you.
+
 The panel on the right has live sliders for cone width, sight range, close-awareness
 radius, turn speed, walk, wall-slide and crawl speeds, the let-go time, corner peek reach,
-wall height and zoom. It also has a wall-cutaway switch, a "Reveal unexplored areas"
+ambient light, sight in the dark, wall height and zoom. It also has a lantern toggle, a
+wall-cutaway switch, a "Reveal unexplored areas"
 toggle (shows the whole map in outline, for comparison) and a debug outline of the vision
-polygon.
+polygon. Click its title bar (or press `T`) to fold it down out of the way; it
+remembers that choice.
 
 ## How it works
 
 - **`src/dungeon.js`**: seeded generator. It places rooms, joins them with a minimum
   spanning tree of 1-wide (sometimes 2-wide) corridors plus a few loops, then furnishes
   some rooms with pillars, partition walls or barrels. Furniture never touches a room's
-  outer ring of floor, so every layout stays fully connected.
+  outer ring of floor, so every layout stays fully connected. Light sources come from
+  their own random stream: in each room a brazier (with open floor all round it), one or
+  two torches, or nothing, plus a few torches along corridors.
 - **`src/vision.js`**: casts rays from the character through the grid, densely inside the
   cone and sparsely outside it, plus one just past each wall corner so shadows are crisp.
   The reach of each ray depends on its angle: long inside the cone, a short "close
@@ -70,14 +94,22 @@ polygon.
   - a visibility polygon on the ground, used to clip the lit floor;
   - the exact stretch of each wall face that rays landed on, so walls are lit only
     where they're actually seen.
+
+  The same code, run as a full circle from each light source, gives each light's
+  shadow-cast pool. Fixed lights work it out once per dungeon; the lantern every frame.
 - **`src/game.js`**: input, movement and collision (a circle of radius 0.22 tiles against
   wall squares, so you can hug walls or walk down the middle of a corridor), the three
-  movement modes (`toggleHug`, `toggleCrawl`, `updateHug`), and rendering. Everything is drawn twice: an outline layer for what's been explored, and a
-  lit layer limited to the visibility polygon and the seen wall stretches.
+  movement modes (`toggleHug`, `toggleCrawl`, `updateHug`), lighting, and rendering.
+  Everything is drawn in two layers: an outline layer for what's been explored, and a
+  live layer limited to the visibility polygon and the seen wall stretches. On the live
+  layer, the floor is drawn at full brightness and then multiplied by a light map (ambient
+  light plus every light's pool). Walls, barrels and the character are shaded by the light
+  at their spot (`lightRGB`). On top go the dark-adapted contours and, wherever nothing can
+  be made out right now, the remembered outlines. Walls and objects are painted back to
+  front along the diagonals.
 - **Exploration memory**: a floor square counts as explored once any part of it has been
-  in view, a wall square once a sight ray has struck it, and a barrel once it's been seen.
-  Close awareness counts too. The memory resets when a new dungeon is generated. Walls and objects
-  are painted back to front along the diagonals.
+  seen and could be made out, a wall square once a sight ray struck it at such a spot, and
+  a barrel the same way. The memory resets when a new dungeon is generated.
 - **Cutaway walls**: in a diagonal view, a wall hides the floor just behind it on screen.
   There are three modes to compare (key `V`):
   - **Off**: walls always stand at full height. When a wall hides the character, a

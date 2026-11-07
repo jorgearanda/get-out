@@ -100,9 +100,67 @@ function generateDungeon(seed) {
     }
   }
 
+  // --- Light sources: braziers in some rooms, torches on some walls, the rest dark ---
+  // (own random stream, so adding lights doesn't change the layout above)
+  const lr = mulberry32(seed ^ 0x5f3759df);
+  const lights = [];
+  const inRoom = (x, y) => rooms.some(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+  const farFromLights = (x, y, d) => lights.every(l => Math.hypot(l.x - x, l.y - y) >= d);
+  // Torches hang on wall faces the camera can see: the south face of a wall to the north of a
+  // floor square, or the east face of a wall to its west.
+  const torchSpot = (x, y) => {
+    if (isWall(x, y)) return null;
+    if (isWall(x, y - 1) && isWall(x - 1, y - 1) && isWall(x + 1, y - 1))
+      return { x: x + 0.5, y: y + 0.14, wx: x, wy: y - 1, face: 'S' };
+    if (isWall(x - 1, y) && isWall(x - 1, y - 1) && isWall(x - 1, y + 1))
+      return { x: x + 0.14, y: y + 0.5, wx: x - 1, wy: y, face: 'E' };
+    return null;
+  };
+  const addTorch = s => lights.push({ kind: 'torch', r: 4.3, I: 1.15, ...s });
+  rooms.forEach((r, i) => {
+    const roll = lr();
+    if (i === 0 || roll < 0.3) {
+      const spots = [];
+      for (let x = r.x; x < r.x + r.w; x++) { const s = torchSpot(x, r.y); if (s && s.face === 'S') spots.push(s); }
+      for (let y = r.y; y < r.y + r.h; y++) { const s = torchSpot(r.x, y); if (s && s.face === 'E') spots.push(s); }
+      const want = r.w * r.h > 40 && lr() < 0.5 ? 2 : 1;
+      let placed = 0;
+      for (let k = 0; k < 20 && spots.length && placed < want; k++) {
+        const s = spots[Math.floor(lr() * spots.length)];
+        if (farFromLights(s.x, s.y, 3.5)) { addTorch(s); placed++; }
+      }
+    } else if (roll < 0.62) {
+      // A brazier near the middle, with open floor all around it
+      const cands = [];
+      for (let y = r.y + 1; y < r.y + r.h - 1; y++)
+        for (let x = r.x + 1; x < r.x + r.w - 1; x++) {
+          let open = true;
+          for (let dy = -1; dy <= 1 && open; dy++) for (let dx = -1; dx <= 1; dx++) if (isWall(x + dx, y + dy)) { open = false; break; }
+          if (open && !props.some(p => Math.abs(p.x - x - 0.5) < 1.6 && Math.abs(p.y - y - 0.5) < 1.6))
+            cands.push([x, y, Math.hypot(x - r.cx, y - r.cy) + lr() * 0.8]);
+        }
+      cands.sort((a, b) => a[2] - b[2]);
+      if (cands.length) {
+        const [x, y] = cands[0];
+        lights.push({ kind: 'brazier', x: x + 0.5, y: y + 0.5, r: 5.6, I: 1.45 });
+        props.push({ type: 'brazier', x: x + 0.5, y: y + 0.5, r: 0.24 });
+      }
+    }
+  });
+  // A few torches along corridors
+  const corridorSpots = [];
+  for (let y = 1; y < H - 1; y++)
+    for (let x = 1; x < W - 1; x++) {
+      if (inRoom(x, y)) continue;
+      const s = torchSpot(x, y);
+      if (s) corridorSpots.push(s);
+    }
+  for (let i = corridorSpots.length - 1; i > 0; i--) { const j = Math.floor(lr() * (i + 1)); [corridorSpots[i], corridorSpots[j]] = [corridorSpots[j], corridorSpots[i]]; }
+  for (const s of corridorSpots) if (lr() < 0.3 && farFromLights(s.x, s.y, 9)) addTorch(s);
+
   const r0 = rooms[0];
   return {
-    W, H, grid, rooms, props, seed, isWall,
+    W, H, grid, rooms, props, lights, seed, isWall,
     start: { x: r0.cx + 0.5, y: r0.cy + 0.5 },
   };
 }

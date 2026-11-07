@@ -24,6 +24,9 @@ const S = {
   crawlSpeed: 1.0, // crawl speed (tiles/s)
   unstickT: 0.3,   // how long you pull away from a wall before you let go of it (s)
   peek: 0.4,       // how far the head leans out past a corner while pressed to a wall (tiles)
+  ambient: 0.05,   // light everywhere, with no light source (0 = pitch black)
+  darkSight: 2.6,  // how far the character can make out shapes in the dark (tiles)
+  lantern: false,  // carrying a lit lantern
   wallH: 0.9,      // wall height (tiles)
   zoom: 1,
   cutMode: 'near', // which walls sink out of the way: 'off' | 'near' | 'sight'
@@ -47,23 +50,41 @@ const COL = {
 let map, player, cam, eye, seed, cut, seenStamp, explored, stamp = 0;
 
 // ---------------------------------------------------------------- exploration memory
-// A floor square is explored once any part of it has been in view; a wall square once a
-// sight ray has struck it; a barrel once it has been in view. Only explored things are
-// drawn (in outline when not currently seen).
+// Something counts as explored once it's been in view AND you could actually make it out:
+// either it was lit well enough, or it was close enough to see in the dark. A floor square
+// needs any part of it seen; a wall square a sight ray striking it; an object to be in view.
+// Light fixtures light themselves, so they're noticed whenever they're in view. Only
+// explored things are drawn (in outline when not currently seen).
+const DISCERN = 0.1; // light level at which things can be made out from afar
+function discernible(x, y) {
+  return Math.hypot(x - eye.x, y - eye.y) <= S.darkSight || lum(lightRGB(x, y)) >= DISCERN;
+}
 function updateExplored(vis) {
   const W = map.W, R = Math.ceil(S.range + 1);
   const pcx = Math.floor(player.x), pcy = Math.floor(player.y);
+  const SAMPLES = [[0.5, 0.5], [0.15, 0.15], [0.85, 0.15], [0.15, 0.85], [0.85, 0.85]];
   for (let cy = Math.max(0, pcy - R); cy <= Math.min(map.H - 1, pcy + R); cy++)
     for (let cx = Math.max(0, pcx - R); cx <= Math.min(W - 1, pcx + R); cx++) {
       const idx = cy * W + cx;
       if (explored[idx] || map.isWall(cx, cy)) continue;
-      if (vis.sees(cx + 0.5, cy + 0.5) || vis.sees(cx + 0.15, cy + 0.15) || vis.sees(cx + 0.85, cy + 0.15) ||
-          vis.sees(cx + 0.15, cy + 0.85) || vis.sees(cx + 0.85, cy + 0.85)) explored[idx] = 1;
+      for (const [u, v] of SAMPLES)
+        if (vis.sees(cx + u, cy + v) && discernible(cx + u, cy + v)) { explored[idx] = 1; break; }
     }
-  for (const idx of vis.litCells) explored[idx] = 1;
+  for (const p of vis.pts) {
+    if (p.cell < 0 || explored[p.cell]) continue;
+    // a point just in front of where the ray struck the wall
+    const dx = p.x - eye.x, dy = p.y - eye.y, d = Math.hypot(dx, dy) || 1;
+    if (discernible(p.x - dx / d * 0.03, p.y - dy / d * 0.03)) explored[p.cell] = 1;
+  }
   for (const p of map.props)
     if (!p.seen && Math.abs(p.x - player.x) <= R && Math.abs(p.y - player.y) <= R &&
-        (vis.sees(p.x, p.y) || vis.sees(p.x + 0.2, p.y + 0.2))) p.seen = true;
+        (vis.sees(p.x, p.y) || vis.sees(p.x + 0.2, p.y + 0.2)) &&
+        (p.type === 'brazier' || discernible(p.x, p.y))) p.seen = true;
+  for (const l of map.lights)
+    if (!l.seen && Math.abs(l.x - player.x) <= R && Math.abs(l.y - player.y) <= R && vis.sees(l.x, l.y)) {
+      l.seen = true;
+      if (l.kind === 'torch') explored[l.wy * W + l.wx] = 1;
+    }
 }
 const isExplored = (cx, cy) => S.revealAll || explored[cy * map.W + cx] === 1;
 // Unexplored walls are skipped, except fully buried ones next to explored walls: those are
@@ -94,6 +115,11 @@ function newDungeon(s) {
   seenStamp = new Int32Array(map.W * map.H);
   explored = new Uint8Array(map.W * map.H);
   for (const p of map.props) p.seen = false;
+  map.torchWalls = new Set();
+  map.lights.forEach((l, i) => {
+    l.seen = false; l.vis = null; l.phase = i * 2.39; l.flick = 1;
+    if (l.kind === 'torch') map.torchWalls.add(l.wy * map.W + l.wx);
+  });
   const el = document.getElementById('seed');
   if (el) el.textContent = seed;
 }
@@ -130,9 +156,11 @@ window.addEventListener('keydown', e => {
   keys.add(k);
   if (k === 'r' && !e.repeat) newDungeon((Math.random() * 1e9) | 0);
   if (k === 'h' && !e.repeat) document.body.classList.toggle('hide-ui');
+  if (k === 't' && !e.repeat) toggleTune();
   if (k === 'x' && !e.repeat) toggleHug();
   if (k === 'c' && !e.repeat) toggleCrawl();
   if (k === 'v' && !e.repeat) cycleCutMode();
+  if (k === 'l' && !e.repeat) { S.lantern = !S.lantern; syncLantern(); }
   if (k.startsWith('arrow') || k === ' ') e.preventDefault();
 });
 window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
@@ -391,14 +419,93 @@ function update(dt) {
 
 // ---------------------------------------------------------------- lighting helpers
 const rgb = (c, f) => `rgb(${(c[0] * f) | 0},${(c[1] * f) | 0},${(c[2] * f) | 0})`;
-function lightAt(x, y) {
-  const dx = x - eye.x, dy = y - eye.y;
-  const d = Math.hypot(dx, dy);
-  const fd = 1 - 0.8 * Math.pow(Math.min(1, d / S.range), 1.3);
-  const half = S.coneDeg * Math.PI / 360;
-  const rel = Math.abs(wrapAngle(Math.atan2(dy, dx) - player.facing));
-  const fa = 1 - 0.4 * smoothstep((rel - half) / SOFT);
-  return Math.max(0.12, fd * (d < 0.5 ? 1 : fa));
+// Light comes only from light sources (plus a little ambient). The character's sight decides
+// what is shown live rather than from memory, not how bright it is.
+const LIGHT_COL = { torch: [1.0, 0.6, 0.3], brazier: [1.0, 0.56, 0.26], lantern: [1.0, 0.8, 0.52] };
+const AMBIENT_TINT = [0.62, 0.74, 1.0];   // what little ambient light there is, is cool
+const CONTOUR = '150,182,222';            // colour of shapes made out in the dark
+const MEMORY = '85,100,127';              // colour of remembered outlines (= COL.wallLine)
+const LANTERN_R = 4.2;
+let litList = [];                          // lights in play this frame
+const falloff = t => (t >= 1 ? 0 : Math.pow(1 - t, 1.8));
+const lum = L => 0.3 * L[0] + 0.55 * L[1] + 0.15 * L[2];
+function shine(l, x, y) { // shadow-cast area of a light: a full-circle "vision" from it
+  return computeVision(map, x, y, 0, { half: Math.PI, soft: 0.01, range: l.r, periph: l.r });
+}
+function prepareLights(t) {
+  litList = [];
+  for (const l of map.lights) {
+    if (!l.vis) { l.col = LIGHT_COL[l.kind]; l.vis = shine(l, l.x, l.y); }
+    l.flick = 1 + 0.06 * Math.sin(t * 7.3 + l.phase) + 0.04 * Math.sin(t * 17.9 + l.phase * 2.1) + 0.025 * Math.sin(t * 31 + l.phase * 0.7);
+    litList.push(l);
+  }
+  if (S.lantern) {
+    const l = { kind: 'lantern', x: player.x, y: player.y, r: LANTERN_R, I: 1.3, col: LIGHT_COL.lantern };
+    l.flick = 1 + 0.025 * Math.sin(t * 11.3) + 0.015 * Math.sin(t * 23.7);
+    l.vis = shine(l, l.x, l.y);
+    litList.push(l);
+  }
+}
+// The light (per colour channel, 1 = full) falling on a point on the ground
+function lightRGB(x, y) {
+  const a = S.ambient;
+  let r = a * AMBIENT_TINT[0], g = a * AMBIENT_TINT[1], b = a * AMBIENT_TINT[2];
+  for (const l of litList) {
+    const dx = x - l.x, dy = y - l.y, d2 = dx * dx + dy * dy;
+    if (d2 >= l.r * l.r) continue;
+    const w = l.I * l.flick * falloff(Math.sqrt(d2) / l.r);
+    if (w < 0.003 || !l.vis.sees(x, y)) continue;
+    r += l.col[0] * w; g += l.col[1] * w; b += l.col[2] * w;
+  }
+  return [r, g, b];
+}
+// How clearly light lets you make something out (0..1), from its light level
+const lightClarity = lvl => smoothstep((lvl - 0.03) / 0.22);
+// How clearly the character makes out shapes in the dark at a point (0..1): only up close
+function darkClarity(x, y) {
+  const D = S.darkSight;
+  if (D <= 0) return 0;
+  const d = Math.hypot(x - eye.x, y - eye.y);
+  return 1 - smoothstep((d - D * 0.45) / (D * 0.55));
+}
+// For a point in view: how strongly to draw dark-adapted contours, and how strongly to keep
+// the remembered outline (when it can't really be made out right now)
+function seeing(x, y, known) {
+  const lc = lightClarity(lum(lightRGB(x, y))), dc = darkClarity(x, y);
+  return { contour: dc * (1 - lc), memory: known ? 1 - Math.max(lc, dc) : 0, light: lc };
+}
+const rgbL = (c, L, f = 1) =>
+  `rgb(${Math.min(255, c[0] * L[0] * f) | 0},${Math.min(255, c[1] * L[1] * f) | 0},${Math.min(255, c[2] * L[2] * f) | 0})`;
+
+// Light map: ambient plus each light's shadow-cast pool, added up; multiplied over the floor
+const lightCanvas = document.createElement('canvas');
+const lctx = lightCanvas.getContext('2d');
+function buildLightMap() {
+  if (lightCanvas.width !== canvas.width || lightCanvas.height !== canvas.height) {
+    lightCanvas.width = canvas.width; lightCanvas.height = canvas.height;
+  }
+  lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  lctx.globalCompositeOperation = 'source-over';
+  const a = S.ambient * 255;
+  lctx.fillStyle = `rgb(${a * AMBIENT_TINT[0] | 0},${a * AMBIENT_TINT[1] | 0},${a * AMBIENT_TINT[2] | 0})`;
+  lctx.fillRect(0, 0, cw, ch);
+  lctx.globalCompositeOperation = 'lighter';
+  for (const l of litList) {
+    const sx = PX(l.x, l.y), sy = PY(l.x, l.y, 0), rad = l.r * hw * Math.SQRT2;
+    if (sx < -rad || sx > cw + rad || sy < -rad || sy > ch + rad) continue;
+    lctx.save();
+    lctx.beginPath();
+    l.vis.pts.forEach((p, i) => { const x = PX(p.x, p.y), y = PY(p.x, p.y, 0); i ? lctx.lineTo(x, y) : lctx.moveTo(x, y); });
+    lctx.closePath();
+    lctx.translate(sx, sy); lctx.scale(1, 0.5); // a circle on the ground is an ellipse on screen
+    const g = lctx.createRadialGradient(0, 0, 0, 0, 0, rad);
+    for (let i = 0; i <= 10; i++) {
+      const w = l.I * l.flick * falloff(i / 10) * 255;
+      g.addColorStop(i / 10, `rgb(${Math.min(255, l.col[0] * w) | 0},${Math.min(255, l.col[1] * w) | 0},${Math.min(255, l.col[2] * w) | 0})`);
+    }
+    lctx.fillStyle = g; lctx.fill();
+    lctx.restore();
+  }
 }
 
 function quad(ax, ay, bx, by, cx, cy, dx, dy) {
@@ -448,39 +555,30 @@ function drawFloorDetails(cx, cy, h) {
   }
 }
 
-function coneWedge(halfA) { // ground-plane wedge covering everything outside ±halfA of facing
-  const R = S.range + 3, px = eye.x, py = eye.y, f = player.facing;
-  ctx.beginPath(); ctx.moveTo(PX(px, py), PY(px, py, 0));
-  const a0 = f + halfA, a1 = f + 2 * Math.PI - halfA;
-  for (let a = a0; a <= a1 + 1e-6; a += (a1 - a0) / 48) {
-    const x = px + Math.cos(a) * R, y = py + Math.sin(a) * R;
-    ctx.lineTo(PX(x, y), PY(x, y, 0));
-  }
-  ctx.closePath();
-}
-
 function drawFloor(vis) {
-  // Outline layer: faint grid everywhere
+  // Memory layer: faint grid over every explored square
   ctx.beginPath();
   for (let cy = 0; cy < map.H; cy++)
     for (let cx = 0; cx < map.W; cx++)
       if (!map.isWall(cx, cy) && isExplored(cx, cy) && onScreen(cx, cy)) diamond(cx, cy);
   ctx.strokeStyle = COL.grid; ctx.lineWidth = 1; ctx.stroke();
 
-  // Lit layer, clipped to what the character can see
+  // Live layer, clipped to what the character can see
   ctx.save();
   ctx.beginPath();
   vis.pts.forEach((p, i) => { const x = PX(p.x, p.y), y = PY(p.x, p.y, 0); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
   ctx.closePath();
   ctx.clip();
 
+  // The floor as it is (fully lit)... Squares you can't make out yet stay blank: their
+  // shape mustn't give away what's there.
   const R = Math.ceil(S.range + 1);
-  const x0 = Math.max(0, Math.floor(player.x - R)), x1 = Math.min(map.W - 1, Math.floor(player.x + R));
-  const y0 = Math.max(0, Math.floor(player.y - R)), y1 = Math.min(map.H - 1, Math.floor(player.y + R));
+  const x0 = Math.max(0, Math.floor(eye.x - R)), x1 = Math.min(map.W - 1, Math.floor(eye.x + R));
+  const y0 = Math.max(0, Math.floor(eye.y - R)), y1 = Math.min(map.H - 1, Math.floor(eye.y + R));
   const seams = new Path2D();
   for (let cy = y0; cy <= y1; cy++) {
     for (let cx = x0; cx <= x1; cx++) {
-      if (map.isWall(cx, cy) || !onScreen(cx, cy)) continue;
+      if (map.isWall(cx, cy) || !onScreen(cx, cy) || !isExplored(cx, cy)) continue;
       const h = hash2(cx, cy, seed);
       ctx.beginPath(); diamond(cx, cy);
       ctx.fillStyle = rgb(COL.floor, 0.86 + ((h >>> 20) & 255) / 255 * 0.22);
@@ -492,23 +590,46 @@ function drawFloor(vis) {
   }
   ctx.strokeStyle = 'rgba(24,19,15,0.55)'; ctx.lineWidth = 1; ctx.stroke(seams);
 
-  // Distance falloff (an ellipse on screen = a circle on the ground)
-  const sx = PX(eye.x, eye.y), sy = PY(eye.x, eye.y, 0);
-  const rad = S.range * hw * Math.SQRT2;
+  // ...times the light falling on it
+  buildLightMap();
   ctx.save();
-  ctx.translate(sx, sy); ctx.scale(1, 0.5);
-  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rad);
-  g.addColorStop(0, 'rgba(4,5,8,0)');
-  g.addColorStop(0.25, 'rgba(4,5,8,0.13)');
-  g.addColorStop(0.5, 'rgba(4,5,8,0.33)');
-  g.addColorStop(0.75, 'rgba(4,5,8,0.55)');
-  g.addColorStop(1, 'rgba(4,5,8,0.8)');
-  ctx.fillStyle = g; ctx.fillRect(-rad * 1.3, -rad * 1.3, rad * 2.6, rad * 2.6);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.drawImage(lightCanvas, 0, 0);
+  ctx.globalCompositeOperation = 'lighten'; // pitch-dark floor looks like the void, not darker
+  ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
-  // Close awareness behind/aside is dimmer than direct sight
-  const half = S.coneDeg * Math.PI / 360;
-  ctx.fillStyle = 'rgba(4,5,8,0.16)';
-  for (let i = 0; i < 3; i++) { coneWedge(half + SOFT * i / 2); ctx.fill(); }
+
+  // Dark-adapted eyes: a faint cool sense of the floor up close...
+  if (S.darkSight > 0) {
+    const sx = PX(eye.x, eye.y), sy = PY(eye.x, eye.y, 0), rad = S.darkSight * hw * Math.SQRT2;
+    ctx.save();
+    ctx.translate(sx, sy); ctx.scale(1, 0.5);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rad);
+    g.addColorStop(0, `rgba(${CONTOUR},0.07)`); g.addColorStop(0.5, `rgba(${CONTOUR},0.045)`); g.addColorStop(1, `rgba(${CONTOUR},0)`);
+    ctx.fillStyle = g; ctx.fillRect(-rad, -rad, rad * 2, rad * 2);
+    ctx.restore();
+  }
+  // ...the edges of the flagstones made out in the dark, and remembered outlines kept
+  // wherever nothing can be made out right now
+  const cont = [], mem = [];
+  for (let i = 0; i <= 8; i++) { cont.push(new Path2D()); mem.push(new Path2D()); }
+  const edgePath = (P, cx, cy) => {
+    P.moveTo(PX(cx, cy), PY(cx, cy, 0)); P.lineTo(PX(cx + 1, cy), PY(cx + 1, cy, 0));
+    P.lineTo(PX(cx + 1, cy + 1), PY(cx + 1, cy + 1, 0)); P.lineTo(PX(cx, cy + 1), PY(cx, cy + 1, 0)); P.closePath();
+  };
+  for (let cy = y0; cy <= y1; cy++)
+    for (let cx = x0; cx <= x1; cx++) {
+      if (map.isWall(cx, cy) || !onScreen(cx, cy)) continue;
+      const v = seeing(cx + 0.5, cy + 0.5, isExplored(cx, cy));
+      const qc = Math.round(v.contour * 8), qm = Math.round(v.memory * 8);
+      if (qc > 0) edgePath(cont[qc], cx, cy);
+      if (qm > 0) edgePath(mem[qm], cx, cy);
+    }
+  for (let q = 1; q <= 8; q++) {
+    ctx.strokeStyle = `rgba(78,96,126,${0.2 * q / 8})`; ctx.stroke(mem[q]);
+    ctx.strokeStyle = `rgba(${CONTOUR},${0.3 * q / 8})`; ctx.stroke(cont[q]);
+  }
   ctx.restore();
 }
 
@@ -547,7 +668,7 @@ function updateCutaway(vis, dt) {
       const idx = cy * W + cx;
       if (!map.isWall(cx, cy)) continue;
       let target = 0;
-      if (Math.abs(cx - pcx) <= R + 3 && Math.abs(cy - pcy) <= R + 3) {
+      if (!map.torchWalls.has(idx) && Math.abs(cx - pcx) <= R + 3 && Math.abs(cy - pcy) <= R + 3) {
         for (const [dx, dy] of COVER) {
           const x = cx + dx, y = cy + dy;
           if (!map.isWall(x, y) && seenStamp[y * W + x] === stamp) { target = 1; break; }
@@ -563,11 +684,16 @@ function wallHeight(cx, cy) {
   return S.wallH - (S.wallH - lo) * cut[cy * map.W + cx];
 }
 
-function litFace(x0, y0, x1, y1, base, hz, bricksAlongX) {
+// A stretch of a south (bricksAlongX) or east wall face that the character sees, lit by the
+// light falling just in front of it. `known` = the wall square is explored.
+function litFace(x0, y0, x1, y1, base, hz, bricksAlongX, known) {
   const ax = PX(x0, y0), ay = PY(x0, y0, 0), bx = PX(x1, y1), by = PY(x1, y1, 0);
+  const nx = bricksAlongX ? 0 : 0.03, ny = bricksAlongX ? 0.03 : 0;     // just in front
+  const ix = bricksAlongX ? 0.03 : 0, iy = bricksAlongX ? 0 : 0.03;     // just inside the ends
+  const p0 = [x0 + nx + ix, y0 + ny + iy], p1 = [x1 + nx - ix, y1 + ny - iy];
+  const L0 = lightRGB(p0[0], p0[1]), L1 = lightRGB(p1[0], p1[1]);
   const g = ctx.createLinearGradient(ax, ay, bx, by);
-  g.addColorStop(0, rgb(base, lightAt(x0, y0)));
-  g.addColorStop(1, rgb(base, lightAt(x1, y1)));
+  g.addColorStop(0, rgbL(base, L0)); g.addColorStop(1, rgbL(base, L1));
   quad(ax, ay, bx, by, bx, by - hz, ax, ay - hz);
   ctx.fillStyle = g; ctx.fill();
 
@@ -589,10 +715,23 @@ function litFace(x0, y0, x1, y1, base, hz, bricksAlongX) {
     }
   }
   ctx.strokeStyle = 'rgba(30,24,18,0.35)'; ctx.lineWidth = 1; ctx.stroke();
+  const lc = Math.max(lightClarity(lum(L0)), lightClarity(lum(L1)));
   ctx.beginPath(); ctx.moveTo(ax, ay - hz); ctx.lineTo(bx, by - hz);
-  ctx.strokeStyle = 'rgba(255,240,215,0.25)'; ctx.stroke();
+  ctx.strokeStyle = `rgba(255,240,215,${0.25 * lc})`; ctx.stroke();
   ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
   ctx.strokeStyle = 'rgba(15,12,9,0.6)'; ctx.stroke();
+
+  // Edges made out in the dark, and remembered edges where nothing can be made out
+  const v0 = seeing(p0[0], p0[1], known), v1 = seeing(p1[0], p1[1], known);
+  const edge = (col, a0, a1) => {
+    if (a0 < 0.02 && a1 < 0.02) return;
+    const eg = ctx.createLinearGradient(ax, ay, bx, by);
+    eg.addColorStop(0, `rgba(${col},${a0})`); eg.addColorStop(1, `rgba(${col},${a1})`);
+    ctx.beginPath(); ctx.moveTo(ax, ay - hz); ctx.lineTo(bx, by - hz); ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+    ctx.strokeStyle = eg; ctx.stroke();
+  };
+  edge(MEMORY, v0.memory, v1.memory);
+  edge(CONTOUR, v0.contour * 0.55, v1.contour * 0.55);
 }
 
 let playerSamples = null, playerHidden = false;
@@ -635,23 +774,32 @@ function drawWall(cx, cy, vis) {
   ctx.strokeStyle = COL.wallLine; ctx.lineWidth = 1; ctx.stroke();
 
   // Lit version, only for the stretches of face the character actually sees
+  const known = isExplored(cx, cy);
   const ivS = hS === 0 && vis.faces.get(idx * 4 + FACE_S);
-  if (ivS) for (const [t0, t1] of ivS) litFace(cx + t0, cy + 1, cx + t1, cy + 1, COL.wallS, hz, true);
+  if (ivS) for (const [t0, t1] of ivS) litFace(cx + t0, cy + 1, cx + t1, cy + 1, COL.wallS, hz, true, known);
   const ivE = hE === 0 && vis.faces.get(idx * 4 + FACE_E);
-  if (ivE) for (const [t0, t1] of ivE) litFace(cx + 1, cy + t0, cx + 1, cy + t1, COL.wallE, hz, false);
+  if (ivE) for (const [t0, t1] of ivE) litFace(cx + 1, cy + t0, cx + 1, cy + t1, COL.wallE, hz, false, known);
   // Does this wall (drawn after the character, so in front) cover them on screen?
   if (playerSamples && !playerHidden && h > 0.3) {
     const poly = [Ax, Ay - hz, Bx, By - hz, Bx, By, Cx, Cy, Dx, Dy, Dx, Dy - hz];
     for (const [x, y] of playerSamples) if (pointInPoly(poly, x, y)) { playerHidden = true; break; }
   }
   if (vis.litCells.has(idx)) {
-    const f = lightAt(cx + 0.5, cy + 0.5);
+    // The top catches about as much light as the floor right next to it
+    let L = [0, 0, 0], best = -1, at = [cx + 0.5, cy + 0.5];
+    for (const [x, y, fx, fy] of [[cx, cy + 1, cx + 0.5, cy + 1.03], [cx + 1, cy, cx + 1.03, cy + 0.5],
+                                  [cx, cy - 1, cx + 0.5, cy - 0.03], [cx - 1, cy, cx - 0.03, cy + 0.5]]) {
+      if (map.isWall(x, y)) continue;
+      const l = lightRGB(fx, fy), v = lum(l);
+      if (v > best) { best = v; L = l; at = [fx, fy]; }
+    }
     quad(Ax, Ay - hz, Bx, By - hz, Cx, Cy - hz, Dx, Dy - hz);
-    ctx.fillStyle = rgb(COL.wallTop, f); ctx.fill();
+    ctx.fillStyle = rgbL(COL.wallTop, L, 0.9); ctx.fill();
+    const v = seeing(at[0], at[1], known);
     edges();
-    ctx.globalAlpha = 0.6;
-    ctx.strokeStyle = rgb([255, 240, 215], Math.min(1, f * 0.95)); ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `rgba(255,240,215,${0.6 * v.light})`; ctx.stroke();
+    if (v.memory > 0.02) { ctx.strokeStyle = `rgba(${MEMORY},${v.memory})`; ctx.stroke(); }
+    if (v.contour > 0.02) { ctx.strokeStyle = `rgba(${CONTOUR},${v.contour * 0.55})`; ctx.stroke(); }
   }
 }
 
@@ -670,21 +818,95 @@ function drawBarrel(b, vis) {
     ctx.beginPath(); ctx.ellipse(cx, ty, rx, ry, 0, 0, Math.PI * 2); ctx.fillStyle = COL.bg; ctx.fill(); ctx.stroke();
     return;
   }
-  const f = lightAt(b.x, b.y);
+  const L = lightRGB(b.x, b.y);
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.beginPath(); ctx.ellipse(cx + rx * 0.15, by + ry * 0.2, rx * 1.15, ry * 1.15, 0, 0, Math.PI * 2); ctx.fill();
   const g = ctx.createLinearGradient(cx - rx, 0, cx + rx, 0);
-  g.addColorStop(0, rgb(COL.wood, f * 0.65)); g.addColorStop(0.4, rgb(COL.wood, f * 1.05)); g.addColorStop(1, rgb(COL.wood, f * 0.55));
+  g.addColorStop(0, rgbL(COL.wood, L, 0.65)); g.addColorStop(0.4, rgbL(COL.wood, L, 1.05)); g.addColorStop(1, rgbL(COL.wood, L, 0.55));
   body(); ctx.fillStyle = g; ctx.fill();
-  ctx.strokeStyle = rgb(COL.hoop, f * 1.2); ctx.lineWidth = Math.max(1, TW / 40);
+  ctx.strokeStyle = rgbL(COL.hoop, L, 1.2); ctx.lineWidth = Math.max(1, TW / 40);
   for (const z of [0.12, 0.43]) {
     const y = PY(b.x, b.y, z);
     ctx.beginPath(); ctx.ellipse(cx, y, rx, ry, 0, 0, Math.PI, false); ctx.stroke();
   }
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.ellipse(cx, ty, rx, ry, 0, 0, Math.PI * 2);
-  ctx.fillStyle = rgb([150, 108, 68], f); ctx.fill(); ctx.strokeStyle = rgb(COL.hoop, f * 1.2); ctx.stroke();
+  ctx.fillStyle = rgbL([150, 108, 68], L); ctx.fill(); ctx.strokeStyle = rgbL(COL.hoop, L, 1.2); ctx.stroke();
   ctx.beginPath(); ctx.ellipse(cx, ty, rx * 0.6, ry * 0.6, 0, 0, Math.PI * 2); ctx.strokeStyle = 'rgba(60,40,24,0.35)'; ctx.stroke();
+  // Made out in the dark / remembered
+  const v = seeing(b.x, b.y, b.seen);
+  for (const [col, a] of [[MEMORY, v.memory], [CONTOUR, v.contour * 0.6]]) {
+    if (a < 0.02) continue;
+    ctx.strokeStyle = `rgba(${col},${a})`;
+    body(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx, ty, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+// ---------------------------------------------------------------- light fixtures
+// Braziers and wall torches. They light themselves, so they're seen whenever they're in
+// view; out of view they're remembered in outline.
+function flamePath(x, y, w, h, t, ph) { // a flickering tongue of flame, base at (x,y)
+  const sway = Math.sin(t * 9 + ph) * w * 0.35 + Math.sin(t * 23 + ph * 2) * w * 0.15;
+  const p = new Path2D();
+  p.moveTo(x - w, y);
+  p.quadraticCurveTo(x - w * 1.1, y - h * 0.55, x + sway, y - h);
+  p.quadraticCurveTo(x + w * 1.1, y - h * 0.55, x + w, y);
+  p.quadraticCurveTo(x, y + w * 0.5, x - w, y);
+  return p;
+}
+function drawGlow(x, y, r, a) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(255,170,80,${0.32 * a})`); g.addColorStop(0.35, `rgba(255,120,40,${0.12 * a})`); g.addColorStop(1, 'rgba(255,90,20,0)');
+  ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  ctx.restore();
+}
+function drawFixture(l, vis, t) {
+  const k = TW / 64;
+  const live = vis.sees(l.x, l.y);
+  const iron = live ? '#2a2420' : COL.wallSOut;
+  const line = live ? '#120e0b' : COL.wallLine;
+  if (l.kind === 'brazier') {
+    const cx = PX(l.x, l.y), by = PY(l.x, l.y, 0), bowl = PY(l.x, l.y, 0.36);
+    const rx = 0.24 * hw * Math.SQRT2, ry = 0.24 * hh * Math.SQRT2;
+    if (live) { ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.beginPath(); ctx.ellipse(cx, by, rx * 1.1, ry * 1.1, 0, 0, Math.PI * 2); ctx.fill(); }
+    // tripod legs
+    ctx.beginPath();
+    for (const a of [0.6, 2.7, 4.8]) {
+      const fx = l.x + Math.cos(a) * 0.2, fy = l.y + Math.sin(a) * 0.2;
+      ctx.moveTo(PX(fx, fy), PY(fx, fy, 0)); ctx.lineTo(cx + Math.cos(a) * rx * 0.4, bowl + ry * 0.6);
+    }
+    ctx.strokeStyle = live ? '#3a322b' : COL.wallLine; ctx.lineWidth = 2.2 * k; ctx.stroke(); ctx.lineWidth = 1;
+    // bowl
+    ctx.beginPath(); ctx.ellipse(cx, bowl, rx, ry, 0, 0, Math.PI, false);
+    ctx.lineTo(cx - rx, bowl); ctx.closePath();
+    ctx.fillStyle = iron; ctx.fill(); ctx.strokeStyle = line; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(cx, bowl, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = live ? '#8a3a12' : COL.bg; ctx.fill(); ctx.strokeStyle = live ? '#4a3a2c' : COL.wallLine; ctx.stroke();
+    if (!live) return;
+    // coals and flames
+    ctx.fillStyle = '#ffb347';
+    for (let i = 0; i < 5; i++) { const a = i * 1.3 + l.phase; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * rx * 0.5, bowl + Math.sin(a) * ry * 0.45, 1.6 * k, 0, Math.PI * 2); ctx.fill(); }
+    const fl = l.flick;
+    ctx.fillStyle = 'rgba(255,120,30,0.9)'; ctx.fill(flamePath(cx, bowl, rx * 0.75, 22 * k * fl, t, l.phase));
+    ctx.fillStyle = 'rgba(255,200,90,0.95)'; ctx.fill(flamePath(cx + rx * 0.1, bowl, rx * 0.42, 14 * k * fl, t * 1.3, l.phase + 1));
+    drawGlow(cx, bowl - 8 * k, 46 * k * fl, 1);
+  } else { // torch in a bracket on the wall
+    const wx = l.face === 'S' ? l.x : l.x - 0.14, wy = l.face === 'S' ? l.y - 0.14 : l.y; // where it meets the wall
+    const bx = PX(wx, wy), byy = PY(wx, wy, 0.42);
+    const hx = PX(l.x, l.y), hy = PY(l.x, l.y, 0.6);
+    ctx.beginPath(); ctx.moveTo(bx, byy); ctx.lineTo(hx, hy);
+    ctx.strokeStyle = live ? '#5a3d22' : COL.wallLine; ctx.lineWidth = 2.6 * k; ctx.stroke(); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(bx, byy, 2.2 * k, 0, Math.PI * 2); ctx.fillStyle = iron; ctx.fill(); ctx.strokeStyle = line; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(hx, hy, 3 * k, 1.8 * k, 0, 0, Math.PI * 2); ctx.fillStyle = iron; ctx.fill(); ctx.stroke();
+    if (!live) return;
+    const fl = l.flick;
+    ctx.fillStyle = 'rgba(255,120,30,0.9)'; ctx.fill(flamePath(hx, hy, 3.6 * k, 15 * k * fl, t, l.phase));
+    ctx.fillStyle = 'rgba(255,205,100,0.95)'; ctx.fill(flamePath(hx, hy, 2 * k, 9 * k * fl, t * 1.3, l.phase + 1));
+    drawGlow(hx, hy - 6 * k, 34 * k * fl, 1);
+  }
 }
 
 // ---------------------------------------------------------------- the character
@@ -876,7 +1098,35 @@ function drawPlayer(ghost) {
   ctx.lineTo(PX(L[0], L[1]), PY(L[0], L[1], 0)); ctx.lineTo(PX(Rr[0], Rr[1]), PY(Rr[0], Rr[1], 0)); ctx.closePath();
   ctx.fillStyle = 'rgba(236,214,170,0.75)'; ctx.fill();
 
+  // The character is lit like everything else, but always keeps a faint cool outline so you
+  // can find yourself in the dark.
+  const lc = lightClarity(lum(lightRGB(player.x, player.y)));
+  const lanternAt = S.lantern && lanternSpot(fx, fy);
+  if (lanternAt && !lanternAt.front) drawLantern(lanternAt, k);
+  ctx.save();
+  if ('filter' in ctx) ctx.filter = `brightness(${(0.4 + 0.6 * lc).toFixed(2)})`;
   fig.paint();
+  ctx.restore();
+  if (lc < 0.97) {
+    ctx.strokeStyle = `rgba(${CONTOUR},${(0.5 * (1 - lc)).toFixed(3)})`; ctx.lineWidth = 1.2;
+    ctx.stroke(fig.body);
+    ctx.beginPath(); ctx.arc(fig.head[0], fig.head[1], fig.head[2], 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+  if (lanternAt && lanternAt.front) drawLantern(lanternAt, k);
+}
+// Where the lantern hangs: at the hip on the side the character faces (low when crawling)
+function lanternSpot(fx, fy) {
+  const x = player.x + fx * 0.2, y = player.y + fy * 0.2, z = player.crawl ? 0.07 : 0.3;
+  return { sx: PX(x, y), sy: PY(x, y, z), front: x + y > player.x + player.y };
+}
+function drawLantern(p, k) {
+  const { sx, sy } = p;
+  ctx.beginPath(); ctx.moveTo(sx, sy - 6 * k); ctx.lineTo(sx, sy - 9 * k);
+  ctx.strokeStyle = '#2a2420'; ctx.lineWidth = 1.2; ctx.stroke(); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(sx - 3 * k, sy - 6 * k, 6 * k, 8 * k, 1.5 * k) : ctx.rect(sx - 3 * k, sy - 6 * k, 6 * k, 8 * k);
+  ctx.fillStyle = '#ffd27a'; ctx.fill(); ctx.strokeStyle = '#3a2c1c'; ctx.stroke();
+  drawGlow(sx, sy - 2 * k, 26 * k, 0.8);
 }
 
 // A soft line along the foot of the wall where the character is pressed against it. It
@@ -907,8 +1157,12 @@ function render(vis) {
   const ents = [];
   for (const p of map.props) {
     if (!onScreen(Math.floor(p.x), Math.floor(p.y))) continue;
-    if (!p.seen && !S.revealAll) continue;
+    if (p.type !== 'barrel' || (!p.seen && !S.revealAll)) continue;
     ents.push({ d: p.x + p.y, draw: () => drawBarrel(p, vis) });
+  }
+  for (const l of map.lights) {
+    if (!onScreen(Math.floor(l.x), Math.floor(l.y)) || (!l.seen && !S.revealAll)) continue;
+    ents.push({ d: l.x + l.y, draw: () => drawFixture(l, vis, clock) });
   }
   ents.push({ d: player.x + player.y, draw: () => drawPlayer() });
   ents.sort((a, b) => a.d - b.d);
@@ -950,6 +1204,8 @@ const SLIDERS = [
   { key: 'crawlSpeed', label: 'Crawl speed', min: 0.3, max: 3, step: 0.1, fmt: v => v.toFixed(1) + ' tiles/s' },
   { key: 'unstickT', label: 'Pull to let go of wall', min: 0.05, max: 1, step: 0.05, fmt: v => v.toFixed(2) + ' s' },
   { key: 'peek', label: 'Corner peek reach', min: 0, max: 0.6, step: 0.02, fmt: v => v.toFixed(2) + ' tiles' },
+  { key: 'ambient', label: 'Ambient light', min: 0, max: 0.6, step: 0.01, fmt: v => Math.round(v * 100) + '%' },
+  { key: 'darkSight', label: 'Sight in the dark', min: 0, max: 6, step: 0.1, fmt: v => v.toFixed(1) + ' tiles' },
   { key: 'wallH', label: 'Wall height', min: 0.3, max: 1.6, step: 0.05, fmt: v => v.toFixed(2) },
   { key: 'zoom', label: 'Zoom', min: 0.5, max: 2.2, step: 0.05, fmt: v => v.toFixed(2) + '×' },
 ];
@@ -966,6 +1222,8 @@ const sliderEls = {};
     row.appendChild(inp); box.appendChild(row);
     sliderEls[d.key] = { inp, val: row.querySelector('.val'), d };
   }
+  const lan = document.getElementById('lantern');
+  lan.addEventListener('change', () => { S.lantern = lan.checked; lan.blur(); });
   const rev = document.getElementById('reveal');
   rev.addEventListener('change', () => { S.revealAll = rev.checked; rev.blur(); });
   const dbg = document.getElementById('debug');
@@ -974,9 +1232,21 @@ const sliderEls = {};
     b.addEventListener('click', () => { S.cutMode = b.dataset.mode; syncCutMode(); b.blur(); });
   }
   syncCutMode();
+  document.getElementById('tune-toggle').addEventListener('click', e => { toggleTune(); e.currentTarget.blur(); });
+  let collapsed = false;
+  try { collapsed = localStorage.getItem('tuneCollapsed') === '1'; } catch (err) {}
+  setTuneCollapsed(collapsed);
   document.getElementById('regen').addEventListener('click', e => { newDungeon((Math.random() * 1e9) | 0); e.target.blur(); });
   syncSliders();
 })();
+// The settings panel folds down to its title bar (T or a click); remembered per browser.
+function setTuneCollapsed(c) {
+  document.getElementById('tune').classList.toggle('collapsed', c);
+  document.getElementById('tune-toggle').setAttribute('aria-expanded', String(!c));
+  try { localStorage.setItem('tuneCollapsed', c ? '1' : '0'); } catch (err) {}
+}
+function toggleTune() { setTuneCollapsed(!document.getElementById('tune').classList.contains('collapsed')); }
+function syncLantern() { document.getElementById('lantern').checked = S.lantern; }
 function syncCutMode() {
   for (const b of document.querySelectorAll('#cutmode button')) b.classList.toggle('on', b.dataset.mode === S.cutMode);
 }
@@ -994,13 +1264,15 @@ function syncSliders() {
 }
 
 // ---------------------------------------------------------------- loop
-let last = performance.now(), fpsAcc = 0, fpsN = 0;
+let last = performance.now(), fpsAcc = 0, fpsN = 0, clock = 0;
 const fpsEl = document.getElementById('fps');
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   setupView();
   update(dt);
   setupView();
+  clock += dt;
+  prepareLights(clock);
   const vis = computeVision(map, eye.x, eye.y, player.facing, {
     half: S.coneDeg * Math.PI / 360, soft: SOFT, range: S.range, periph: Math.max(0.05, S.periph),
   });
