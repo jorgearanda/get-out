@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get Out — vision prototype</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #07090d; }
+  body { font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; color: #c9d1de; }
+  canvas { display: block; cursor: none; }
+  .panel {
+    position: fixed; top: 14px; background: rgba(12, 15, 21, 0.82); border: 1px solid #222a38;
+    border-radius: 8px; padding: 12px 14px; backdrop-filter: blur(4px); user-select: none;
+  }
+  #help { left: 14px; max-width: 290px; }
+  #tune { right: 14px; width: 250px; }
+  h1 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #e9dcc2; letter-spacing: .02em; }
+  h1 span { color: #7d889b; font-weight: 400; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  li { margin: 3px 0; }
+  kbd {
+    display: inline-block; min-width: 16px; padding: 0 4px; margin-right: 2px; text-align: center;
+    border: 1px solid #3a4558; border-bottom-width: 2px; border-radius: 4px; background: #161b25;
+    font: 11px/16px ui-monospace, Menlo, monospace; color: #e2e7ef;
+  }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; margin-bottom: 8px; }
+  .row .name { color: #9aa5b8; }
+  .row .val { color: #e9dcc2; font-variant-numeric: tabular-nums; }
+  .row input { grid-column: 1 / -1; width: 100%; margin: 2px 0 0; accent-color: #5aa596; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; color: #7d889b; }
+  button {
+    background: #1b2230; color: #e2e7ef; border: 1px solid #344055; border-radius: 5px; padding: 3px 9px;
+    font: inherit; cursor: pointer;
+  }
+  button:hover { background: #232c3d; }
+  .seg { display: flex; margin-top: 4px; border: 1px solid #344055; border-radius: 5px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; border-radius: 0; padding: 4px 0; background: #141a24; color: #9aa5b8; }
+  .seg button + button { border-left: 1px solid #344055; }
+  .seg button.on { background: #2c5a52; color: #f0f4f8; }
+  body.hide-ui .panel { display: none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="help" class="panel">
+  <h1>Get Out <span>· vision prototype</span></h1>
+  <ul>
+    <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</li>
+    <li><b>Mouse</b> aim your gaze</li>
+    <li><kbd>Q</kbd><kbd>E</kbd> or <kbd>←</kbd><kbd>→</kbd> turn gaze (keyboard)</li>
+    <li><kbd>X</kbd> press against / let go of the nearest wall</li>
+    <li><kbd>C</kbd> crawl / stand up</li>
+    <li><b>Scroll</b> zoom</li>
+    <li><kbd>R</kbd> new dungeon &nbsp; <kbd>H</kbd> hide panels</li>
+  </ul>
+</div>
+
+<div id="tune" class="panel">
+  <div id="sliders"></div>
+  <div class="row">
+    <span class="name">Lower walls in the way <kbd>V</kbd></span>
+    <div id="cutmode" class="seg" style="grid-column:1 / -1">
+      <button data-mode="off" title="Walls always full height; a dashed outline shows you when hidden">Off</button>
+      <button data-mode="near" title="Walls sink only around the character">Near you</button>
+      <button data-mode="sight" title="Walls sink wherever they hide something you can see">In sight</button>
+    </div>
+  </div>
+  <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
+    <input id="reveal" type="checkbox" style="grid-column:auto; width:auto; margin:0">
+    <span class="name">Reveal unexplored areas</span>
+  </label>
+  <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
+    <input id="debug" type="checkbox" style="grid-column:auto; width:auto; margin:0">
+    <span class="name">Show vision polygon</span>
+  </label>
+  <div class="foot"><span>seed <span id="seed"></span> · <span id="fps"></span></span><button id="regen">New dungeon</button></div>
+</div>
+
+<script src="src/dungeon.js"></script>
+<script src="src/vision.js"></script>
+<script src="src/game.js"></script>
+</body>
+</html>
