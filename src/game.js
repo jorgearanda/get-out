@@ -28,6 +28,11 @@ const S = {
   darkSight: 2.6,  // how far the character can make out shapes in the dark (tiles)
   lantern: false,  // carrying a lit lantern
   wallH: 0.9,      // wall height (tiles)
+  enemyConeDeg: 80, // full width of a guard's cone of sight
+  enemyRange: 8,   // how far guards see (tiles)
+  spotLight: 0.1,  // how much light must fall on you for a guard to spot you
+  enemySpeed: 3.0, // guards' speed when chasing or searching (tiles/s)
+  enemiesSee: true, // guards can spot you (off: wander about unseen, for testing)
   zoom: 1,
   cutMode: 'near', // which walls sink out of the way: 'off' | 'near' | 'sight'
   debug: false,
@@ -48,6 +53,9 @@ const COL = {
 
 // ---------------------------------------------------------------- world state
 let map, player, cam, eye, seed, cut, seenStamp, explored, stamp = 0;
+let level = 1;          // how many flights of stairs down
+let state = 'play';     // 'play' | 'caught' | 'done' (made it to the stairs)
+let stateT = 0;         // time since the state changed
 
 // ---------------------------------------------------------------- exploration memory
 // Something counts as explored once it's been in view AND you could actually make it out:
@@ -120,8 +128,33 @@ function newDungeon(s) {
     l.seen = false; l.vis = null; l.phase = i * 2.39; l.flick = 1;
     if (l.kind === 'torch') map.torchWalls.add(l.wy * map.W + l.wx);
   });
+  enemies = makeEnemies(map.enemies);
+  prevPX = prevPY = null;
+  setState('play');
   const el = document.getElementById('seed');
   if (el) el.textContent = seed;
+  const lv = document.getElementById('level');
+  if (lv) lv.textContent = level;
+}
+function setState(s) {
+  state = s; stateT = 0;
+  const b = document.getElementById('banner');
+  if (!b) return;
+  b.hidden = s === 'play';
+  b.className = 'banner ' + s;
+  if (s === 'caught') {
+    b.querySelector('.b-title').textContent = 'Caught!';
+    b.querySelector('.b-sub').innerHTML = '<kbd>Enter</kbd> try this level again &nbsp; <kbd>R</kbd> a new one';
+  } else if (s === 'done') {
+    b.querySelector('.b-title').textContent = `Level ${level} done`;
+    b.querySelector('.b-sub').innerHTML = 'Down the stairs… <kbd>Enter</kbd>';
+  }
+}
+function nextLevel() { level++; newDungeon((Math.random() * 1e9) | 0); }
+// Made it onto the stairs?
+function checkExit() {
+  const x = map.exit;
+  if (x && Math.hypot(player.x - x.x - 0.5, player.y - x.y - 0.5) < 0.32) setState('done');
 }
 newDungeon(1337);
 
@@ -155,6 +188,7 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys.add(k);
   if (k === 'r' && !e.repeat) newDungeon((Math.random() * 1e9) | 0);
+  if (k === 'enter' && !e.repeat) { if (state === 'caught') newDungeon(seed); else if (state === 'done') nextLevel(); }
   if (k === 'h' && !e.repeat) document.body.classList.toggle('hide-ui');
   if (k === 't' && !e.repeat) toggleTune();
   if (k === 'x' && !e.repeat) toggleHug();
@@ -193,12 +227,17 @@ function resolveCollisions(p) {
         }
       }
     }
-    for (const o of map.props) {
-      const dx = p.x - o.x, dy = p.y - o.y, rr = p.r + o.r;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < rr * rr && d2 > 1e-10) { const d = Math.sqrt(d2); p.x += dx / d * (rr - d); p.y += dy / d * (rr - d); }
-    }
+    // objects, and the character and the guards bump into each other (guards don't get in
+    // each other's way)
+    for (const o of map.props) pushOff(p, o);
+    if (p === player) { for (const o of enemies) pushOff(p, o); } else pushOff(p, player);
   }
+}
+
+function pushOff(p, o) { // move circle p out of circle o
+  const dx = p.x - o.x, dy = p.y - o.y, rr = p.r + o.r;
+  const d2 = dx * dx + dy * dy;
+  if (d2 < rr * rr && d2 > 1e-10) { const d = Math.sqrt(d2); p.x += dx / d * (rr - d); p.y += dy / d * (rr - d); }
 }
 
 // ---------------------------------------------------------------- movement modes
@@ -459,6 +498,18 @@ function lightRGB(x, y) {
   }
   return [r, g, b];
 }
+// How much light falls on the character (what guards need to see them by)
+const playerLight = () => lum(lightRGB(player.x, player.y));
+let gemLit = null;
+function updateLightGem() {
+  const lit = playerLight() >= S.spotLight;
+  if (lit === gemLit) return;
+  gemLit = lit;
+  const el = document.getElementById('gem');
+  if (!el) return;
+  el.className = 'gem ' + (lit ? 'lit' : 'dark');
+  el.textContent = lit ? 'in the light' : 'in shadow';
+}
 // How clearly light lets you make something out (0..1), from its light level
 const lightClarity = lvl => smoothstep((lvl - 0.03) / 0.22);
 // How clearly the character makes out shapes in the dark at a point (0..1): only up close
@@ -555,13 +606,67 @@ function drawFloorDetails(cx, cy, h) {
   }
 }
 
+// The stairs down: a stairwell sunk into the floor square, its steps leading down to the
+// north-west (away from the camera, under the wall when there's one there) and on into the
+// dark. The steps are shallow: from this camera angle steep ones would be seen edge-on.
+const STEPS = 5, STEP_DZ = 0.06;
+function drawStairs() {
+  const x0 = map.exit.x, y0 = map.exit.y, w = 1 / STEPS;
+  const poly = (pts, fill) => {
+    ctx.beginPath();
+    pts.forEach(([x, y, z], i) => i ? ctx.lineTo(PX(x, y), PY(x, y, z)) : ctx.moveTo(PX(x, y), PY(x, y, z)));
+    ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+  };
+  ctx.save();
+  ctx.beginPath(); diamond(x0, y0); ctx.clip(); // seen only through the opening
+  ctx.fillStyle = '#060505'; ctx.fill();
+  const deep = -1.2, bottom = -STEPS * STEP_DZ;
+  // far end: a dark drop where the stairs carry on down
+  const fx = PX(x0, y0 + 0.5), g = ctx.createLinearGradient(fx, PY(x0, y0 + 0.5, bottom), fx, PY(x0, y0 + 0.5, deep));
+  g.addColorStop(0, rgb(COL.wallE, 0.3)); g.addColorStop(1, 'rgb(6,5,5)');
+  poly([[x0, y0, 0], [x0, y0 + 1, 0], [x0, y0 + 1, deep], [x0, y0, deep]], g);
+  const side = [[x0, y0, 0], [x0 + 1, y0, 0]];                                  // stepped side wall
+  for (let i = 0; i < STEPS; i++) {
+    const z = -(i + 1) * STEP_DZ;
+    side.push([x0 + 1 - i * w, y0, z], [x0 + 1 - (i + 1) * w, y0, z]);
+  }
+  side.push([x0, y0, deep]);
+  poly(side, rgb(COL.wallS, 0.45));
+  for (let i = STEPS - 1; i >= 0; i--) { // treads, deepest first, darker the deeper they go
+    const z = -(i + 1) * STEP_DZ, xa = x0 + 1 - i * w, xb = x0 + 1 - (i + 1) * w;
+    poly([[xb, y0, z], [xa, y0, z], [xa, y0 + 1, z], [xb, y0 + 1, z]], rgb(COL.wallTop, 1.05 - i * 0.17));
+    ctx.beginPath(); ctx.moveTo(PX(xb, y0), PY(xb, y0, z)); ctx.lineTo(PX(xb, y0 + 1), PY(xb, y0 + 1, z));
+    ctx.strokeStyle = 'rgba(12,9,7,0.9)'; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
+  }
+  ctx.restore();
+  // the rim of the opening
+  ctx.beginPath(); diamond(x0, y0); ctx.strokeStyle = 'rgba(20,15,11,0.8)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1;
+}
+// Once found, the stairs keep a gold outline (strongest when not lit and in view)
+const EXIT_COL = '222,190,110';
+function drawStairsMarker(vis) {
+  const x0 = map.exit.x, y0 = map.exit.y, cx = x0 + 0.5, cy = y0 + 0.5;
+  const v = seeing(cx, cy, true);
+  const a = 0.3 + 0.5 * (vis.sees(cx, cy) ? v.memory : 1);
+  ctx.beginPath(); diamond(x0, y0);
+  for (let i = 1; i < STEPS; i++) {
+    const x = x0 + 1 - i / STEPS;
+    ctx.moveTo(PX(x, y0), PY(x, y0, 0)); ctx.lineTo(PX(x, y0 + 1), PY(x, y0 + 1, 0));
+  }
+  ctx.strokeStyle = `rgba(${EXIT_COL},${a.toFixed(3)})`; ctx.lineWidth = 1.4; ctx.stroke(); ctx.lineWidth = 1;
+}
+
+// Draws the floor; returns the outline of all the explored floor on screen
 function drawFloor(vis) {
   // Memory layer: faint grid over every explored square
-  ctx.beginPath();
+  const known = new Path2D();
   for (let cy = 0; cy < map.H; cy++)
     for (let cx = 0; cx < map.W; cx++)
-      if (!map.isWall(cx, cy) && isExplored(cx, cy) && onScreen(cx, cy)) diamond(cx, cy);
-  ctx.strokeStyle = COL.grid; ctx.lineWidth = 1; ctx.stroke();
+      if (!map.isWall(cx, cy) && isExplored(cx, cy) && onScreen(cx, cy)) {
+        known.moveTo(PX(cx, cy), PY(cx, cy, 0)); known.lineTo(PX(cx + 1, cy), PY(cx + 1, cy, 0));
+        known.lineTo(PX(cx + 1, cy + 1), PY(cx + 1, cy + 1, 0)); known.lineTo(PX(cx, cy + 1), PY(cx, cy + 1, 0)); known.closePath();
+      }
+  ctx.strokeStyle = COL.grid; ctx.lineWidth = 1; ctx.stroke(known);
 
   // Live layer, clipped to what the character can see
   ctx.save();
@@ -589,6 +694,7 @@ function drawFloor(vis) {
     }
   }
   ctx.strokeStyle = 'rgba(24,19,15,0.55)'; ctx.lineWidth = 1; ctx.stroke(seams);
+  if (map.exit && isExplored(map.exit.x, map.exit.y) && onScreen(map.exit.x, map.exit.y)) drawStairs();
 
   // ...times the light falling on it
   buildLightMap();
@@ -631,6 +737,7 @@ function drawFloor(vis) {
     ctx.strokeStyle = `rgba(${CONTOUR},${0.3 * q / 8})`; ctx.stroke(cont[q]);
   }
   ctx.restore();
+  return known;
 }
 
 // ---------------------------------------------------------------- walls
@@ -734,15 +841,9 @@ function litFace(x0, y0, x1, y1, base, hz, bricksAlongX, known) {
   edge(CONTOUR, v0.contour * 0.55, v1.contour * 0.55);
 }
 
-let playerSamples = null, playerHidden = false;
-function pointInPoly(p, x, y) {
-  let inside = false;
-  for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
-    const xi = p[i], yi = p[i + 1], xj = p[j], yj = p[j + 1];
-    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
+// Walls drawn after the character (so in front of them) whose outlines on screen overlap
+// the character's: the character's outline is dashed in again only inside these.
+let playerBox = null, occluders = [];
 
 function drawWall(cx, cy, vis) {
   const idx = cy * map.W + cx;
@@ -779,10 +880,11 @@ function drawWall(cx, cy, vis) {
   if (ivS) for (const [t0, t1] of ivS) litFace(cx + t0, cy + 1, cx + t1, cy + 1, COL.wallS, hz, true, known);
   const ivE = hE === 0 && vis.faces.get(idx * 4 + FACE_E);
   if (ivE) for (const [t0, t1] of ivE) litFace(cx + 1, cy + t0, cx + 1, cy + t1, COL.wallE, hz, false, known);
-  // Does this wall (drawn after the character, so in front) cover them on screen?
-  if (playerSamples && !playerHidden && h > 0.3) {
-    const poly = [Ax, Ay - hz, Bx, By - hz, Bx, By, Cx, Cy, Dx, Dy, Dx, Dy - hz];
-    for (const [x, y] of playerSamples) if (pointInPoly(poly, x, y)) { playerHidden = true; break; }
+  // Drawn after the character, so in front: does it overlap them on screen?
+  if (playerBox && h > 0.3) {
+    const b = playerBox;
+    if (Dx < b[2] && Bx > b[0] && Ay - hz < b[3] && Cy > b[1])
+      occluders.push([Ax, Ay - hz, Bx, By - hz, Bx, By, Cx, Cy, Dx, Dy, Dx, Dy - hz]);
   }
   if (vis.litCells.has(idx)) {
     // The top catches about as much light as the floor right next to it
@@ -1074,8 +1176,15 @@ function drawPlayer(ghost) {
   const c = { sx, sy, k, ux, uy, m: player.moving, psx, psy };
   const fig = player.crawl ? crawlFigure(c) : player.hug ? hugFigure(c) : walkFigure(c);
 
-  if (ghost) { // dashed outline, drawn on top of walls that hide the character
+  if (ghost) { // dashed outline, drawn on top of the walls in front, only where they cover
     ctx.save();
+    ctx.beginPath();
+    for (const p of ghost) {
+      ctx.moveTo(p[0], p[1]);
+      for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i], p[i + 1]);
+      ctx.closePath();
+    }
+    ctx.clip(); // same winding for every wall, so this is their union
     ctx.globalAlpha = 0.7; ctx.setLineDash([3 * k, 2.5 * k]);
     ctx.strokeStyle = '#8fe3d2'; ctx.lineWidth = 1.5;
     ctx.stroke(fig.body);
@@ -1083,8 +1192,12 @@ function drawPlayer(ghost) {
     ctx.restore();
     return;
   }
-  // Points used to tell whether a wall drawn later hides the character
-  playerSamples = fig.samples;
+  // The character's extent on screen, to find walls drawn later that may cover them
+  playerBox = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of fig.samples) {
+    playerBox[0] = Math.min(playerBox[0], x - 12 * k); playerBox[1] = Math.min(playerBox[1], y - 10 * k);
+    playerBox[2] = Math.max(playerBox[2], x + 12 * k); playerBox[3] = Math.max(playerBox[3], y + 6 * k);
+  }
 
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   fig.shadow();
@@ -1151,10 +1264,20 @@ function render(vis) {
   ctx.lineJoin = 'round'; ctx.lineCap = 'round';
   ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, cw, ch);
 
-  drawFloor(vis);
+  const known = drawFloor(vis);
+  if (map.exit && isExplored(map.exit.x, map.exit.y)) drawStairsMarker(vis);
+  drawEnemyCones(known);
 
   // Painter's order along the diagonals, interleaving walls and objects.
   const ents = [];
+  for (const e of enemies) {
+    if (e.shown) ents.push({ d: e.x + e.y, draw: () => drawEnemy(e) });
+    else if (S.revealAll) ents.push({ d: e.x + e.y, draw: () => drawEnemyMemory(e, e.x, e.y, e.facing, 0.55) });
+    else if (e.memKnown) {
+      const a = 0.22 + 0.4 * Math.exp(-(clock - e.shownT) / 6);
+      ents.push({ d: e.memX + e.memY, draw: () => drawEnemyMemory(e, e.memX, e.memY, e.memFacing, a) });
+    }
+  }
   for (const p of map.props) {
     if (!onScreen(Math.floor(p.x), Math.floor(p.y))) continue;
     if (p.type !== 'barrel' || (!p.seen && !S.revealAll)) continue;
@@ -1166,7 +1289,7 @@ function render(vis) {
   }
   ents.push({ d: player.x + player.y, draw: () => drawPlayer() });
   ents.sort((a, b) => a.d - b.d);
-  playerSamples = null; playerHidden = false;
+  playerBox = null; occluders = [];
   let ei = 0;
   for (let s = 0; s <= map.W + map.H - 2; s++) {
     while (ei < ents.length && ents[ei].d < s + 1) ents[ei++].draw();
@@ -1176,8 +1299,9 @@ function render(vis) {
     }
   }
   while (ei < ents.length) ents[ei++].draw();
-  if (playerHidden) drawPlayer(true);
+  if (occluders.length) drawPlayer(occluders);
   drawWallContact();
+  drawEnemyAlerts();
 
   // Cursor reticle on the ground
   if (lookMode === 'mouse' && mouse.has) {
@@ -1206,6 +1330,10 @@ const SLIDERS = [
   { key: 'peek', label: 'Corner peek reach', min: 0, max: 0.6, step: 0.02, fmt: v => v.toFixed(2) + ' tiles' },
   { key: 'ambient', label: 'Ambient light', min: 0, max: 0.6, step: 0.01, fmt: v => Math.round(v * 100) + '%' },
   { key: 'darkSight', label: 'Sight in the dark', min: 0, max: 6, step: 0.1, fmt: v => v.toFixed(1) + ' tiles' },
+  { key: 'enemyConeDeg', label: 'Guard cone width', min: 20, max: 180, step: 1, fmt: v => v + '°' },
+  { key: 'enemyRange', label: 'Guard sight range', min: 2, max: 14, step: 0.5, fmt: v => v + ' tiles' },
+  { key: 'spotLight', label: 'Light guards need to see you', min: 0, max: 0.6, step: 0.01, fmt: v => Math.round(v * 100) + '%' },
+  { key: 'enemySpeed', label: 'Guard speed', min: 1, max: 8, step: 0.1, fmt: v => v.toFixed(1) + ' tiles/s' },
   { key: 'wallH', label: 'Wall height', min: 0.3, max: 1.6, step: 0.05, fmt: v => v.toFixed(2) },
   { key: 'zoom', label: 'Zoom', min: 0.5, max: 2.2, step: 0.05, fmt: v => v.toFixed(2) + '×' },
 ];
@@ -1224,6 +1352,8 @@ const sliderEls = {};
   }
   const lan = document.getElementById('lantern');
   lan.addEventListener('change', () => { S.lantern = lan.checked; lan.blur(); });
+  const gs = document.getElementById('guards-see');
+  gs.addEventListener('change', () => { S.enemiesSee = gs.checked; gs.blur(); });
   const rev = document.getElementById('reveal');
   rev.addEventListener('change', () => { S.revealAll = rev.checked; rev.blur(); });
   const dbg = document.getElementById('debug');
@@ -1269,14 +1399,21 @@ const fpsEl = document.getElementById('fps');
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   setupView();
-  update(dt);
+  stateT += dt;
+  if (state === 'play') {
+    clock += dt;
+    update(dt);
+    if (updateEnemies(dt)) setState('caught');
+    else checkExit();
+  } else if (state === 'done' && stateT > 2.5) nextLevel();
   setupView();
-  clock += dt;
   prepareLights(clock);
   const vis = computeVision(map, eye.x, eye.y, player.facing, {
     half: S.coneDeg * Math.PI / 360, soft: SOFT, range: S.range, periph: Math.max(0.05, S.periph),
   });
   updateExplored(vis);
+  updateEnemyVisibility(vis);
+  updateLightGem();
   updateCutaway(vis, dt);
   render(vis);
   fpsAcc += dt; fpsN++;

@@ -49,10 +49,32 @@
   #tune.collapsed .tune-head { margin-bottom: 0; }
   #tune.collapsed .chev { transform: rotate(-90deg); }
   #tune.collapsed #tune-body { display: none; }
+  .hud {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%); padding: 5px 12px; border-radius: 6px;
+    background: rgba(12, 15, 21, 0.7); border: 1px solid #222a38; color: #9aa5b8; pointer-events: none; white-space: nowrap;
+  }
+  .hud b { color: #e9dcc2; font-weight: 600; }
+  .hud .goal { color: #dec06e; }
+  .gem::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; vertical-align: 0; }
+  .gem.dark { color: #8fa6c8; }
+  .gem.dark::before { background: #1d2a3d; box-shadow: 0 0 0 1px #4f6585; }
+  .gem.lit { color: #ffc46b; }
+  .gem.lit::before { background: #ffc46b; box-shadow: 0 0 6px 1px rgba(255,180,90,.8); }
+  .banner {
+    position: fixed; top: 24%; left: 50%; transform: translate(-50%, -50%); padding: 18px 28px; text-align: center;
+    background: rgba(10, 12, 17, 0.88); border: 1px solid #2c3546; border-radius: 10px; pointer-events: none;
+  }
+  .banner[hidden] { display: none; }
+  .banner .b-title { font-size: 26px; font-weight: 700; letter-spacing: .02em; margin-bottom: 6px; }
+  .banner.caught .b-title { color: #ff6a55; }
+  .banner.done .b-title { color: #dec06e; }
+  .banner .b-sub { color: #9aa5b8; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<div class="hud">Level <b id="level">1</b> · <span class="goal">find the stairs down</span> · <span id="gem" class="gem" title="Guards can only spot you in the light"></span></div>
+<div id="banner" class="banner" hidden><div class="b-title"></div><div class="b-sub"></div></div>
 
 <div id="help" class="panel">
   <h1>Get Out <span>· vision prototype</span></h1>
@@ -64,6 +86,7 @@
     <li><kbd>C</kbd> crawl / stand up</li>
     <li><kbd>L</kbd> lantern on / off</li>
     <li><b>Scroll</b> zoom</li>
+    <li><kbd>Enter</kbd> retry / next level once caught or out</li>
     <li><kbd>R</kbd> new dungeon &nbsp; <kbd>H</kbd> hide panels</li>
     <li><kbd>T</kbd> show/hide settings</li>
   </ul>
@@ -88,6 +111,10 @@
     <span class="name">Carry a lantern <kbd>L</kbd></span>
   </label>
   <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
+    <input id="guards-see" type="checkbox" checked style="grid-column:auto; width:auto; margin:0">
+    <span class="name">Guards can spot you</span>
+  </label>
+  <label class="row" style="grid-template-columns:auto 1fr; align-items:center">
     <input id="reveal" type="checkbox" style="grid-column:auto; width:auto; margin:0">
     <span class="name">Reveal unexplored areas</span>
   </label>
@@ -101,6 +128,7 @@
 
 <script src="src/dungeon.js"></script>
 <script src="src/vision.js"></script>
+<script src="src/enemies.js"></script>
 <script src="src/game.js"></script>
 </body>
 </html>

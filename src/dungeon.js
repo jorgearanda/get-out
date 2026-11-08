@@ -100,7 +100,49 @@ function generateDungeon(seed) {
     }
   }
 
-  // --- Light sources: braziers in some rooms, torches on some walls, the rest dark ---
+  // --- How far every square is from the start (4-way steps) ---
+  const r0 = rooms[0];
+  const dist = new Int32Array(W * H).fill(-1);
+  {
+    const q = [r0.cy * W + r0.cx];
+    dist[q[0]] = 0;
+    for (let h = 0; h < q.length; h++) {
+      const c = q[h], x = c % W, y = (c / W) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, ny = y + dy;
+        if (isWall(nx, ny) || dist[ny * W + nx] >= 0) continue;
+        dist[ny * W + nx] = dist[c] + 1; q.push(ny * W + nx);
+      }
+    }
+  }
+  const propNear = (x, y, d) => props.some(p => Math.abs(p.x - x) < d && Math.abs(p.y - y) < d);
+
+  // --- The way out: stairs down, in the room farthest from the start ---
+  let exitRoom = 1, far = -1;
+  rooms.forEach((r, i) => {
+    if (i === 0) return;
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) if (dist[y * W + x] > far) { far = dist[y * W + x]; exitRoom = i; }
+  });
+  let exit = null;
+  {
+    // Preferably against the room's west wall, so the steps lead down under it
+    const r = rooms[exitRoom];
+    let best = -1;
+    for (let y = r.y + 1; y < r.y + r.h - 1; y++) {
+      const x = r.x;
+      if (isWall(x, y) || !isWall(x - 1, y) || !isWall(x - 1, y - 1) || !isWall(x - 1, y + 1) || isWall(x + 1, y)) continue;
+      if (propNear(x + 0.5, y + 0.5, 1.2)) continue;
+      if (dist[y * W + x] > best) { best = dist[y * W + x]; exit = { x, y, wall: true }; }
+    }
+    if (!exit) {
+      for (let y = r.y; y < r.y + r.h; y++)
+        for (let x = r.x; x < r.x + r.w; x++)
+          if (!isWall(x, y) && !propNear(x + 0.5, y + 0.5, 1.2) && dist[y * W + x] > best) { best = dist[y * W + x]; exit = { x, y, wall: false }; }
+    }
+  }
+
+  // --- Light sources: braziers and torches in most rooms, some along corridors ---
   // (own random stream, so adding lights doesn't change the layout above)
   const lr = mulberry32(seed ^ 0x5f3759df);
   const lights = [];
@@ -117,37 +159,47 @@ function generateDungeon(seed) {
     return null;
   };
   const addTorch = s => lights.push({ kind: 'torch', r: 4.3, I: 1.15, ...s });
-  rooms.forEach((r, i) => {
-    const roll = lr();
-    if (i === 0 || roll < 0.3) {
-      const spots = [];
-      for (let x = r.x; x < r.x + r.w; x++) { const s = torchSpot(x, r.y); if (s && s.face === 'S') spots.push(s); }
-      for (let y = r.y; y < r.y + r.h; y++) { const s = torchSpot(r.x, y); if (s && s.face === 'E') spots.push(s); }
-      const want = r.w * r.h > 40 && lr() < 0.5 ? 2 : 1;
-      let placed = 0;
-      for (let k = 0; k < 20 && spots.length && placed < want; k++) {
-        const s = spots[Math.floor(lr() * spots.length)];
-        if (farFromLights(s.x, s.y, 3.5)) { addTorch(s); placed++; }
-      }
-    } else if (roll < 0.62) {
-      // A brazier near the middle, with open floor all around it
-      const cands = [];
-      for (let y = r.y + 1; y < r.y + r.h - 1; y++)
-        for (let x = r.x + 1; x < r.x + r.w - 1; x++) {
-          let open = true;
-          for (let dy = -1; dy <= 1 && open; dy++) for (let dx = -1; dx <= 1; dx++) if (isWall(x + dx, y + dy)) { open = false; break; }
-          if (open && !props.some(p => Math.abs(p.x - x - 0.5) < 1.6 && Math.abs(p.y - y - 0.5) < 1.6))
-            cands.push([x, y, Math.hypot(x - r.cx, y - r.cy) + lr() * 0.8]);
-        }
-      cands.sort((a, b) => a[2] - b[2]);
-      if (cands.length) {
-        const [x, y] = cands[0];
-        lights.push({ kind: 'brazier', x: x + 0.5, y: y + 0.5, r: 5.6, I: 1.45 });
-        props.push({ type: 'brazier', x: x + 0.5, y: y + 0.5, r: 0.24 });
-      }
+  const roomTorches = (r, want) => {
+    const spots = [];
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) { const s = torchSpot(x, y); if (s) spots.push(s); }
+    let placed = 0;
+    for (let k = 0; k < 40 && spots.length && placed < want; k++) {
+      const s = spots[Math.floor(lr() * spots.length)];
+      if (farFromLights(s.x, s.y, 2.8)) { addTorch(s); placed++; }
     }
+  };
+  const roomBraziers = (r, want) => {
+    // Near the middle, with open floor all around, away from the barrels and the stairs
+    const cands = [];
+    for (let y = r.y + 1; y < r.y + r.h - 1; y++)
+      for (let x = r.x + 1; x < r.x + r.w - 1; x++) {
+        let open = true;
+        for (let dy = -1; dy <= 1 && open; dy++) for (let dx = -1; dx <= 1; dx++) if (isWall(x + dx, y + dy)) { open = false; break; }
+        if (!open || propNear(x + 0.5, y + 0.5, 1.6)) continue;
+        if (exit && Math.abs(exit.x - x) < 2 && Math.abs(exit.y - y) < 2) continue;
+        cands.push([x, y, Math.hypot(x - r.cx, y - r.cy) + lr() * 0.8]);
+      }
+    cands.sort((a, b) => a[2] - b[2]);
+    let placed = 0;
+    for (const [x, y] of cands) {
+      if (placed >= want) break;
+      if (!farFromLights(x + 0.5, y + 0.5, 4)) continue;
+      lights.push({ kind: 'brazier', x: x + 0.5, y: y + 0.5, r: 5.6, I: 1.45 });
+      props.push({ type: 'brazier', x: x + 0.5, y: y + 0.5, r: 0.24 });
+      placed++;
+    }
+  };
+  // A torch over the stairs, so the way out stands out once you see it
+  if (exit && exit.wall) addTorch(torchSpot(exit.x, exit.y));
+  rooms.forEach((r, i) => {
+    const roll = lr(), perim = 2 * (r.w + r.h);
+    if (i !== 0 && i !== exitRoom && roll < 0.08) return; // the odd room stays dark
+    if (roll < 0.5) roomTorches(r, Math.min(5, 1 + Math.round(perim / 10)));
+    else if (roll < 0.82) { roomBraziers(r, 1); roomTorches(r, Math.round(perim / 12)); }
+    else { roomBraziers(r, r.w * r.h >= 45 ? 2 : 1); roomTorches(r, 2); }
   });
-  // A few torches along corridors
+  // Torches along corridors
   const corridorSpots = [];
   for (let y = 1; y < H - 1; y++)
     for (let x = 1; x < W - 1; x++) {
@@ -156,11 +208,56 @@ function generateDungeon(seed) {
       if (s) corridorSpots.push(s);
     }
   for (let i = corridorSpots.length - 1; i > 0; i--) { const j = Math.floor(lr() * (i + 1)); [corridorSpots[i], corridorSpots[j]] = [corridorSpots[j], corridorSpots[i]]; }
-  for (const s of corridorSpots) if (lr() < 0.3 && farFromLights(s.x, s.y, 9)) addTorch(s);
+  for (const s of corridorSpots) if (lr() < 0.6 && farFromLights(s.x, s.y, 5)) addTorch(s);
 
-  const r0 = rooms[0];
+  // Squares guards won't walk into: ones with something standing in them, and the stairs
+  const blocked = new Uint8Array(W * H);
+  for (const p of props) blocked[Math.floor(p.y) * W + Math.floor(p.x)] = 1;
+  if (exit) blocked[exit.y * W + exit.x] = 1;
+
+  // --- Guards: standing at posts in some rooms (more likely by the exit), and a few in corridors ---
+  const er = mulberry32(seed ^ 0x2545f491);
+  const enemies = [];
+  const postOK = (x, y) => !isWall(x, y) && !blocked[y * W + x] && dist[y * W + x] >= 10 &&
+    Math.hypot(x + 0.5 - (r0.cx + 0.5), y + 0.5 - (r0.cy + 0.5)) >= 9 &&
+    !propNear(x + 0.5, y + 0.5, 0.9) && enemies.every(e => Math.hypot(e.x - x - 0.5, e.y - y - 0.5) >= 3) &&
+    roomy(x, y);
+  // A guard mustn't plug a doorway or a narrow corridor: you'd have no way past
+  const roomy = (x, y) => {
+    let open = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (!isWall(x + dx, y + dy)) open++;
+    if (open < 6) return false;
+    if (!inRoom(x, y)) return true;
+    return [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dy]) => isWall(x + dx, y + dy) || inRoom(x + dx, y + dy));
+  };
+  rooms.forEach((r, i) => {
+    if (i === 0 || er() >= (i === exitRoom ? 0.85 : 0.45)) return;
+    const n = r.w * r.h >= 40 && er() < 0.35 ? 2 : 1;
+    for (let k = 0; k < n; k++)
+      for (let t = 0; t < 40; t++) {
+        const x = r.x + Math.floor(er() * r.w), y = r.y + Math.floor(er() * r.h);
+        if (!postOK(x, y)) continue;
+        // Watching over the room from near its edge, or looking any which way from the middle
+        const dc = Math.hypot(r.cx - x, r.cy - y);
+        const facing = dc > 1.5 ? Math.atan2(r.cy - y, r.cx - x) + (er() - 0.5) * 1.2 : er() * Math.PI * 2;
+        enemies.push({ x: x + 0.5, y: y + 0.5, facing });
+        break;
+      }
+  });
+  const sentries = er() < 0.5 ? 1 : 2;
+  for (let k = 0, t = 0; k < sentries && t < 200; t++) {
+    const x = 1 + Math.floor(er() * (W - 2)), y = 1 + Math.floor(er() * (H - 2));
+    if (inRoom(x, y) || !postOK(x, y) || dist[y * W + x] < 14) continue;
+    // Looking along the corridor
+    const along = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => !isWall(x + dx, y + dy));
+    if (!along.length) continue;
+    const [dx, dy] = along[Math.floor(er() * along.length)];
+    enemies.push({ x: x + 0.5, y: y + 0.5, facing: Math.atan2(dy, dx) });
+    k++;
+  }
+
   return {
-    W, H, grid, rooms, props, lights, seed, isWall,
+    W, H, grid, rooms, props, lights, seed, isWall, blocked, enemies, exit, exitRoom,
     start: { x: r0.cx + 0.5, y: r0.cy + 0.5 },
   };
 }
