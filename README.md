@@ -20,14 +20,31 @@ python3 -m http.server 8765
 
 and visit http://localhost:8765.
 
+### On an iPad (or anywhere else)
+
+The game is just static files, so any web host will serve it:
+
+- **Same Wi-Fi, for a quick try:** run
+  `python3 -m http.server 8765 --bind 0.0.0.0` in this folder, find the Mac's address with
+  `ipconfig getifaddr en0`, and open `http://<that address>:8765` on the iPad.
+- **A link to share:** push the repo to GitHub and turn on Pages (Settings → Pages, deploy
+  from `main`, root folder), drag the folder onto Netlify Drop, or zip it up as an HTML game
+  on itch.io.
+
+It plays on an iPad with a keyboard and trackpad attached: the keys work as on a Mac,
+hovering the trackpad pointer aims your gaze (so does touching the screen), and a
+two-finger scroll or a pinch zooms the game. A paired game controller works too. In Safari,
+Share → Add to Home Screen gives it an icon and opens it full screen, like an app. Without a
+keyboard there's no way to move yet.
+
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | `W A S D` | Move (screen-relative: W is up the screen) |
-| Mouse | Aim your gaze |
+| Mouse or trackpad (or touching the screen) | Aim your gaze |
 | `Q`/`E` or `←`/`→` | Turn your gaze with the keyboard |
-| Scroll wheel | Zoom |
+| Scroll wheel, two-finger scroll or pinch | Zoom |
 | `X` | Press against the nearest wall bordering your square, or let go |
 | `C` | Crawl, or stand back up |
 | `L` | Light or put out your lantern |
@@ -57,8 +74,8 @@ and visit http://localhost:8765.
     resistance (the body eases off the wall a little meanwhile).
 
 **Light and sight.** The dungeon is dark apart from its light sources: braziers in some
-rooms, torches on many walls, and a lantern you can carry (`L`). About one room in fourteen
-has no light at all. What you see depends on both:
+rooms, torches on many walls, and a lantern you can carry (`L`). Almost every room is lit;
+about one in thirty has no light at all. What you see depends on both:
 
 | | In your sight | Out of sight |
 |---|---|---|
@@ -122,9 +139,10 @@ remembers that choice.
   some rooms with pillars, partition walls or barrels. Furniture never touches a room's
   outer ring of floor, so every layout stays fully connected. It puts the stairs in the
   room farthest (in steps) from the start. Light sources come from their own random
-  stream: most rooms get torches (up to five, on any wall face the camera sees), one or two
-  braziers (with open floor all round them), or a mix; about one room in fourteen stays
-  dark. Corridors get torches too, about 49 lights per level in all. Guard posts come from a
+  stream: every room gets torches (up to six, on any wall face the camera sees), and
+  bigger rooms one or two braziers out in the middle (with open floor all round them),
+  since the torches can't reach their far side; about one room in thirty stays dark.
+  Corridors get torches too, about 59 lights per level in all. Guard posts come from a
   third stream.
 - **`src/enemies.js`**: the guards: their sight test (cone, range, then a ray), A* path
   finding (8-way, no corner cutting, avoiding barrels, braziers and the stairwell), path

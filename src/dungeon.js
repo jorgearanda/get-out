@@ -166,7 +166,7 @@ function generateDungeon(seed) {
     let placed = 0;
     for (let k = 0; k < 40 && spots.length && placed < want; k++) {
       const s = spots[Math.floor(lr() * spots.length)];
-      if (farFromLights(s.x, s.y, 2.8)) { addTorch(s); placed++; }
+      if (farFromLights(s.x, s.y, 2.6)) { addTorch(s); placed++; }
     }
   };
   const roomBraziers = (r, want) => {
@@ -184,7 +184,7 @@ function generateDungeon(seed) {
     let placed = 0;
     for (const [x, y] of cands) {
       if (placed >= want) break;
-      if (!farFromLights(x + 0.5, y + 0.5, 4)) continue;
+      if (!farFromLights(x + 0.5, y + 0.5, 3.5)) continue;
       lights.push({ kind: 'brazier', x: x + 0.5, y: y + 0.5, r: 5.6, I: 1.45 });
       props.push({ type: 'brazier', x: x + 0.5, y: y + 0.5, r: 0.24 });
       placed++;
@@ -193,11 +193,13 @@ function generateDungeon(seed) {
   // A torch over the stairs, so the way out stands out once you see it
   if (exit && exit.wall) addTorch(torchSpot(exit.x, exit.y));
   rooms.forEach((r, i) => {
-    const roll = lr(), perim = 2 * (r.w + r.h);
-    if (i !== 0 && i !== exitRoom && roll < 0.08) return; // the odd room stays dark
-    if (roll < 0.5) roomTorches(r, Math.min(5, 1 + Math.round(perim / 10)));
-    else if (roll < 0.82) { roomBraziers(r, 1); roomTorches(r, Math.round(perim / 12)); }
-    else { roomBraziers(r, r.w * r.h >= 45 ? 2 : 1); roomTorches(r, 2); }
+    const roll = lr(), perim = 2 * (r.w + r.h), area = r.w * r.h;
+    if (i !== 0 && i !== exitRoom && roll < 0.03) return; // very rarely, a room stays dark
+    // Torches along the walls, plus braziers out in the middle of bigger rooms (which the
+    // torches, all on the north and west walls, can't reach the far side of)
+    roomTorches(r, Math.min(6, 1 + Math.round(perim / 8)));
+    if (area >= 60) roomBraziers(r, 2);
+    else if (area >= 30 || roll > 0.6) roomBraziers(r, 1);
   });
   // Torches along corridors
   const corridorSpots = [];

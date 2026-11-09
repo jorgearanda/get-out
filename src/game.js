@@ -183,9 +183,13 @@ function screenDirToAngle(sx, sy) {
 const keys = new Set();
 let lookMode = 'mouse';
 const mouse = { x: 0, y: 0, has: false };
+// Key names, the same everywhere (older iPadOS Safari names the arrow keys its own way)
+const IOS_KEYS = { uikeyinputleftarrow: 'arrowleft', uikeyinputrightarrow: 'arrowright', uikeyinputuparrow: 'arrowup', uikeyinputdownarrow: 'arrowdown', uikeyinputescape: 'escape' };
+const keyName = e => { const k = (e.key || '').toLowerCase(); return IOS_KEYS[k] || k; };
 window.addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
-  const k = e.key.toLowerCase();
+  if (e.metaKey || e.ctrlKey) return; // leave system shortcuts (⌘-Tab, ⌘-R…) alone
+  const k = keyName(e);
   keys.add(k);
   if (k === 'r' && !e.repeat) newDungeon((Math.random() * 1e9) | 0);
   if (k === 'enter' && !e.repeat) { if (state === 'caught') newDungeon(seed); else if (state === 'done') nextLevel(); }
@@ -197,14 +201,28 @@ window.addEventListener('keydown', e => {
   if (k === 'l' && !e.repeat) { S.lantern = !S.lantern; syncLantern(); }
   if (k.startsWith('arrow') || k === ' ') e.preventDefault();
 });
-window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+window.addEventListener('keyup', e => {
+  keys.delete(keyName(e));
+  if (e.key === 'Meta') keys.clear(); // while ⌘ is held, other keys' releases never arrive
+});
+// Switching apps or tabs (⌘-Tab on an iPad too) mustn't leave keys stuck down
 window.addEventListener('blur', () => keys.clear());
-canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.has = true; lookMode = 'mouse'; });
+document.addEventListener('visibilitychange', () => keys.clear());
+// Aim with a mouse, an iPad trackpad (hovering), a pen, or by touching the screen
+const aimAt = e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.has = true; lookMode = 'mouse'; };
+canvas.addEventListener('pointermove', aimAt);
+canvas.addEventListener('pointerdown', aimAt);
+// Zoom: scroll wheel or two-finger scroll; pinching (trackpad or screen) zooms the game, not
+// the page
+const setZoom = z => { S.zoom = Math.max(0.5, Math.min(2.2, z)); syncSliders(); };
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  S.zoom = Math.max(0.5, Math.min(2.2, S.zoom * Math.exp(-e.deltaY * 0.0015)));
-  syncSliders();
+  setZoom(S.zoom * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015))); // ctrlKey: a pinch, in Chrome
 }, { passive: false });
+let pinchFrom = 1;
+document.addEventListener('gesturestart', e => { e.preventDefault(); pinchFrom = S.zoom; });  // Safari's pinch
+document.addEventListener('gesturechange', e => { e.preventDefault(); setZoom(pinchFrom * e.scale); });
+document.addEventListener('gestureend', e => e.preventDefault());
 
 // ---------------------------------------------------------------- physics
 function resolveCollisions(p) {

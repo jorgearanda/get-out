@@ -2,18 +2,31 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Get Out — vision prototype</title>
+<!-- Added to an iPad's (or phone's) home screen, it opens full screen like an app -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Get Out">
+<meta name="theme-color" content="#07090d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-180.png">
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #07090d; }
-  body { font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; color: #c9d1de; }
-  canvas { display: block; cursor: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #07090d; overscroll-behavior: none; }
+  body {
+    font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; color: #c9d1de;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    --top: calc(14px + env(safe-area-inset-top, 0px)); /* clear of the iPad's status bar when full screen */
+  }
+  canvas { display: block; cursor: none; touch-action: none; }
   .panel {
-    position: fixed; top: 14px; background: rgba(12, 15, 21, 0.82); border: 1px solid #222a38;
+    position: fixed; top: var(--top); background: rgba(12, 15, 21, 0.82); border: 1px solid #222a38;
     border-radius: 8px; padding: 12px 14px; backdrop-filter: blur(4px); user-select: none;
   }
-  #help { left: 14px; max-width: 290px; }
-  #tune { right: 14px; width: 250px; }
+  #help { left: calc(14px + env(safe-area-inset-left, 0px)); max-width: 290px; }
+  #tune { right: calc(14px + env(safe-area-inset-right, 0px)); width: 250px; max-height: calc(100% - var(--top) - 14px); overflow-y: auto; }
   h1 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #e9dcc2; letter-spacing: .02em; }
   h1 span { color: #7d889b; font-weight: 400; }
   ul { margin: 0; padding: 0; list-style: none; }
@@ -50,7 +63,7 @@
   #tune.collapsed .chev { transform: rotate(-90deg); }
   #tune.collapsed #tune-body { display: none; }
   .hud {
-    position: fixed; top: 14px; left: 50%; transform: translateX(-50%); padding: 5px 12px; border-radius: 6px;
+    position: fixed; top: var(--top); left: 50%; transform: translateX(-50%); padding: 5px 12px; border-radius: 6px;
     background: rgba(12, 15, 21, 0.7); border: 1px solid #222a38; color: #9aa5b8; pointer-events: none; white-space: nowrap;
   }
   .hud b { color: #e9dcc2; font-weight: 600; }
