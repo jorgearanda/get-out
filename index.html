@@ -73,20 +73,29 @@
   .gem.dark::before { background: #1d2a3d; box-shadow: 0 0 0 1px #4f6585; }
   .gem.lit { color: #ffc46b; }
   .gem.lit::before { background: #ffc46b; box-shadow: 0 0 6px 1px rgba(255,180,90,.8); }
+  .hp { display: inline-flex; align-items: center; gap: 6px; vertical-align: -1px; }
+  .hp-bar { display: inline-block; width: 54px; height: 7px; border-radius: 4px; background: #241618; box-shadow: 0 0 0 1px #4a2b2e; overflow: hidden; }
+  #hp-fill { display: block; height: 100%; width: 100%; background: #c9473a; transition: width .3s; }
+  #hp-fill.mid { background: #d9822f; }
+  #hp-fill.low { background: #ff3b2a; animation: pulse 1s infinite; }
+  .hp b { min-width: 2.2em; display: inline-block; }
+  .hp.hit { animation: hit .6s; }
+  @keyframes hit { 0%, 40% { color: #ff6a55; transform: scale(1.12); } 100% { transform: none; } }
+  @keyframes pulse { 50% { opacity: .55; } }
   .banner {
     position: fixed; top: 24%; left: 50%; transform: translate(-50%, -50%); padding: 18px 28px; text-align: center;
     background: rgba(10, 12, 17, 0.88); border: 1px solid #2c3546; border-radius: 10px; pointer-events: none;
   }
   .banner[hidden] { display: none; }
   .banner .b-title { font-size: 26px; font-weight: 700; letter-spacing: .02em; margin-bottom: 6px; }
-  .banner.caught .b-title { color: #ff6a55; }
+  .banner.dead .b-title { color: #ff6a55; }
   .banner.done .b-title { color: #dec06e; }
   .banner .b-sub { color: #9aa5b8; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<div class="hud">Level <b id="level">1</b> · <span class="goal">find the stairs down</span> · <span id="gem" class="gem" title="Guards can only spot you in the light"></span></div>
+<div class="hud">Level <b id="level">1</b> · <span id="hp-box" class="hp" title="Health: each fight with a guard costs 20"><i class="hp-bar"><i id="hp-fill"></i></i><b id="hp">100</b></span> · <span class="goal">find the stairs down</span> · <span id="gem" class="gem" title="Guards can only spot you in the light"></span></div>
 <div id="banner" class="banner" hidden><div class="b-title"></div><div class="b-sub"></div></div>
 
 <div id="help" class="panel">
@@ -99,7 +108,7 @@
     <li><kbd>C</kbd> crawl / stand up</li>
     <li><kbd>L</kbd> lantern on / off</li>
     <li><b>Scroll</b> zoom</li>
-    <li><kbd>Enter</kbd> retry / next level once caught or out</li>
+    <li><kbd>Enter</kbd> start over once dead / next level once out</li>
     <li><kbd>R</kbd> new dungeon &nbsp; <kbd>H</kbd> hide panels</li>
     <li><kbd>T</kbd> show/hide settings</li>
   </ul>

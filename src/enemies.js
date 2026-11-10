@@ -2,6 +2,8 @@
 // Guards. Each one stands at its post until the character steps into its cone of sight. Then
 // it chases them, along the shortest path through the dungeon (guards know the layout), to
 // wherever it last saw them. If they're not there, it keeps moving around looking for them.
+// A guard that catches the character fights them: the guard ends up out cold on the floor,
+// and the character comes away hurt.
 // Uses the world state, settings and drawing helpers from game.js.
 
 const ENEMY_R = 0.22;
@@ -12,7 +14,9 @@ let enemies = [];
 function makeEnemies(list) {
   return list.map((p, i) => ({
     x: p.x, y: p.y, r: ENEMY_R, facing: p.facing, post: { x: p.x, y: p.y, facing: p.facing },
-    state: 'idle',   // 'idle' (at its post) | 'chase' | 'search'
+    state: 'idle',   // 'idle' (at its post) | 'chase' | 'search' | 'down' (knocked out)
+    dmg: 20,         // hit points a fight with it costs the character
+    downT: -99, downDir: 0,          // when it was knocked out, and which way it fell
     path: [], goal: -1, repathT: 0, stuckT: 0,
     vx: 0, vy: 0, walk: 0, moving: 0, phase: i * 1.7 + 0.4,
     last: null, lastDir: null,       // where (and which way) it last saw the character going
@@ -215,7 +219,7 @@ function pickSearchSpot(e) {
 }
 
 let prevPX = null, prevPY = null;
-// Returns true if a guard caught the character this frame.
+// Returns the guards that caught the character this frame.
 function updateEnemies(dt) {
   // Which way the character is going, for guards that lose sight of them
   const pdx = prevPX == null ? 0 : player.x - prevPX, pdy = prevPY == null ? 0 : player.y - prevPY;
@@ -224,9 +228,10 @@ function updateEnemies(dt) {
   // Guards need light to see you by. Only the body counts: a head leaning out round a corner
   // while pressed to a wall isn't enough to give you away.
   const lit = playerLight() >= S.spotLight;
-  let caught = false;
+  const caught = [];
 
   for (const e of enemies) {
+    if (e.state === 'down') continue;
     const sees = S.enemiesSee && lit && enemyCanSee(e, player.x, player.y);
     if (sees) {
       if (e.state !== 'chase') { e.shoutT = clock; e.path = []; }
@@ -267,9 +272,15 @@ function updateEnemies(dt) {
     const sp = Math.hypot(e.vx, e.vy);
     e.moving = Math.min(1, sp / Math.max(0.3, S.enemySpeed));
     e.walk += sp * dt * 5.5;
-    if (e.state === 'chase' && Math.hypot(e.x - player.x, e.y - player.y) < e.r + player.r + CATCH_D) caught = true;
+    if (e.state === 'chase' && Math.hypot(e.x - player.x, e.y - player.y) < e.r + player.r + CATCH_D) caught.push(e);
   }
   return caught;
+}
+
+// The fight is over: the guard is out cold where it stood, fallen away from the character.
+function knockOut(e) {
+  e.state = 'down'; e.downT = clock; e.downDir = Math.atan2(e.y - player.y, e.x - player.x);
+  e.path = []; e.vx = e.vy = 0; e.moving = 0; e.shoutT = -99;
 }
 
 // What the player knows of each guard: seen right now (lit, or close enough in the dark),
@@ -281,7 +292,7 @@ function updateEnemyVisibility(vis) {
     e.lc = lightClarity(lum(lightRGB(e.x, e.y)));
     e.dc = darkClarity(e.x, e.y);
     e.shown = inView && Math.max(e.lc, e.dc) > 0.05;
-    if (e.shown) { e.shownT = clock; e.memKnown = true; e.memX = e.x; e.memY = e.y; e.memFacing = e.facing; }
+    if (e.shown) { e.shownT = clock; e.memKnown = true; e.memX = e.x; e.memY = e.y; e.memFacing = e.facing; e.memDown = e.state === 'down'; }
     else if (e.memKnown && vis.sees(e.memX, e.memY) && discernible(e.memX, e.memY)) e.memKnown = false;
   }
 }
@@ -293,7 +304,7 @@ function drawEnemyCones(floorClip) {
   const half = S.enemyConeDeg * Math.PI / 360;
   let any = false;
   for (const e of enemies) {
-    if (!e.shown) continue;
+    if (!e.shown || e.state === 'down') continue;
     if (!any) { ctx.save(); ctx.clip(floorClip); any = true; }
     const cv = computeVision(map, e.x, e.y, e.facing, { half, soft: 0.02, range: S.enemyRange, periph: 0.3 });
     const col = CONE_COL[e.state], a = e.state === 'chase' ? 1.4 : 1;
@@ -397,7 +408,7 @@ function guardFigure(e, x, y, facing, k) {
 }
 function drawEnemy(e) {
   const k = TW / 64;
-  const fig = guardFigure(e, e.x, e.y, e.facing, k);
+  const fig = e.state === 'down' ? downedFigure(e, e.x, e.y, k) : guardFigure(e, e.x, e.y, e.facing, k);
   const a = Math.min(1, Math.max(e.lc, e.dc) * 1.6);
   ctx.save();
   ctx.globalAlpha = a;
@@ -414,9 +425,63 @@ function drawEnemy(e) {
     ctx.lineWidth = 1;
   }
 }
+
+// A knocked-out guard, flat on its back with its helmet knocked off and its spear dropped.
+// It falls over during the first moments after the fight.
+function downedFigure(e, x, y, k) {
+  const t = Math.min(1, Math.max(0, (clock - e.downT) / 0.35)), fall = t * t;
+  const cd = Math.cos(e.downDir), sd = Math.sin(e.downDir);
+  // a point on the body: `a` along it (head end positive), `c` across it, `z` above the floor
+  const P = (a, c, z) => {
+    const wx = x + (a * cd - c * sd) * fall, wy = y + (a * sd + c * cd) * fall;
+    return [PX(wx, wy), PY(wx, wy, z * fall + (1 - fall) * (a + 0.38) * 1.2)];
+  };
+  const quad = pts => { const p = new Path2D(); pts.forEach(([a, c, z], i) => { const [X, Y] = P(a, c, z); i ? p.lineTo(X, Y) : p.moveTo(X, Y); }); p.closePath(); return p; };
+  const body = quad([[-0.36, -0.13, 0.05], [-0.36, 0.13, 0.05], [0.2, 0.17, 0.09], [0.2, -0.17, 0.09]]);
+  const tabard = quad([[-0.3, -0.06, 0.1], [-0.3, 0.06, 0.1], [0.17, 0.075, 0.13], [0.17, -0.075, 0.13]]);
+  const [hx, hy] = P(0.3, 0, 0.08);
+  const head = [hx, hy, 6.2 * k];
+  const [mx, my] = P(0.42, 0.26, 0.03); // the helmet, rolled off to one side
+  const [s0x, s0y] = P(-0.25, -0.32, 0.01), [s1x, s1y] = P(0.55, -0.12, 0.01);
+  return {
+    body, head,
+    shadow() { const [cx, cy] = P(-0.05, 0, 0); ctx.beginPath(); ctx.ellipse(cx, cy, 20 * k, 9 * k, 0, 0, Math.PI * 2); ctx.fill(); },
+    paint() {
+      ctx.beginPath(); ctx.moveTo(s0x, s0y); ctx.lineTo(s1x, s1y);
+      ctx.strokeStyle = '#4a3220'; ctx.lineWidth = 2.2 * k; ctx.stroke(); ctx.lineWidth = 1;
+      const ang = Math.atan2(s1y - s0y, s1x - s0x);
+      ctx.save(); ctx.translate(s1x, s1y); ctx.rotate(ang);
+      ctx.beginPath(); ctx.moveTo(9 * k, 0); ctx.lineTo(0, -2.6 * k); ctx.lineTo(0, 2.6 * k); ctx.closePath();
+      ctx.fillStyle = GUARD.steel; ctx.fill(); ctx.strokeStyle = GUARD.line; ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = GUARD.mail[1]; ctx.fill(body); ctx.strokeStyle = GUARD.line; ctx.lineWidth = 1.2; ctx.stroke(body);
+      ctx.fillStyle = GUARD.tabard[1]; ctx.fill(tabard); ctx.strokeStyle = GUARD.line; ctx.stroke(tabard);
+      for (const c of [-0.16, 0.16]) {
+        const [px, py] = P(0.16, c, 0.1);
+        ctx.beginPath(); ctx.ellipse(px, py, 4.2 * k, 3 * k, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#6f7782'; ctx.fill(); ctx.strokeStyle = GUARD.line; ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(hx, hy, head[2], 0, Math.PI * 2); ctx.fillStyle = '#c99b78'; ctx.fill(); ctx.strokeStyle = GUARD.line; ctx.stroke();
+      ctx.beginPath(); ctx.arc(hx, hy - 1.5 * k, head[2], Math.PI * 1.05, Math.PI * 1.95); ctx.strokeStyle = '#2a2320'; ctx.lineWidth = 2.5 * k; ctx.stroke(); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(mx, my, 9.5 * k, 3.4 * k, 0.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#5f6670'; ctx.fill(); ctx.strokeStyle = GUARD.line; ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(mx, my - 1.5 * k, 6 * k, 4 * k, 0.5, Math.PI, 0); ctx.fillStyle = '#8e959f'; ctx.fill(); ctx.stroke();
+    },
+  };
+}
 // Remembered where last seen: a fading outline
-function drawEnemyMemory(e, x, y, facing, a) {
+function drawEnemyMemory(e, x, y, facing, a, down) {
   const k = TW / 64;
+  if (down) { // out cold: just its outline
+    const fig = downedFigure(e, x, y, k);
+    ctx.save();
+    ctx.setLineDash([3 * k, 3 * k]);
+    ctx.strokeStyle = `rgba(200,120,105,${a.toFixed(3)})`; ctx.lineWidth = 1.2;
+    ctx.stroke(fig.body);
+    ctx.beginPath(); ctx.arc(fig.head[0], fig.head[1], fig.head[2], 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    return;
+  }
   const fig = guardFigure({ walk: 0, moving: 0 }, x, y, facing, k);
   ctx.save();
   ctx.setLineDash([3 * k, 3 * k]);
@@ -435,6 +500,7 @@ function drawEnemyAlerts() {
   ctx.font = `700 ${Math.round(17 * k)}px ui-sans-serif, -apple-system, sans-serif`;
   ctx.lineWidth = 3; ctx.lineJoin = 'round';
   for (const e of enemies) {
+    if (e.state === 'down') continue;
     const shout = clock - e.shoutT < 1.2;
     if (!shout && (!e.shown || e.state === 'idle')) continue;
     const sym = e.state === 'search' ? '?' : '!';

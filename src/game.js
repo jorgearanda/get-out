@@ -54,8 +54,14 @@ const COL = {
 // ---------------------------------------------------------------- world state
 let map, player, cam, eye, seed, cut, seenStamp, explored, stamp = 0;
 let level = 1;          // how many flights of stairs down
-let state = 'play';     // 'play' | 'caught' | 'done' (made it to the stairs)
+let state = 'play';     // 'play' | 'dead' | 'done' (made it to the stairs)
 let stateT = 0;         // time since the state changed
+// Health. It carries over from one level to the next; each fight with a guard costs some.
+const HP_MAX = 100;
+let hp = HP_MAX, hpAtLevel = HP_MAX; // now, and on arriving at this level
+let fights = [];        // recent fights, for the dust cloud and the damage number
+let stunUntil = 0;      // the character can't move while a fight lasts
+let fxT = 0;            // time for effects, which keep going while the game is paused
 
 // ---------------------------------------------------------------- exploration memory
 // Something counts as explored once it's been in view AND you could actually make it out:
@@ -130,6 +136,8 @@ function newDungeon(s) {
   });
   enemies = makeEnemies(map.enemies);
   prevPX = prevPY = null;
+  fights = []; stunUntil = 0;
+  updateHP();
   setState('play');
   const el = document.getElementById('seed');
   if (el) el.textContent = seed;
@@ -142,15 +150,31 @@ function setState(s) {
   if (!b) return;
   b.hidden = s === 'play';
   b.className = 'banner ' + s;
-  if (s === 'caught') {
-    b.querySelector('.b-title').textContent = 'Caught!';
-    b.querySelector('.b-sub').innerHTML = '<kbd>Enter</kbd> try this level again &nbsp; <kbd>R</kbd> a new one';
+  if (s === 'dead') {
+    b.querySelector('.b-title').textContent = 'You died';
+    b.querySelector('.b-sub').innerHTML = `On level ${level}. <kbd>Enter</kbd> start over from the top`;
   } else if (s === 'done') {
     b.querySelector('.b-title').textContent = `Level ${level} done`;
     b.querySelector('.b-sub').innerHTML = 'Down the stairs… <kbd>Enter</kbd>';
   }
 }
-function nextLevel() { level++; newDungeon((Math.random() * 1e9) | 0); }
+function nextLevel() { level++; hpAtLevel = hp; newDungeon((Math.random() * 1e9) | 0); }
+function startOver() { level = 1; hp = hpAtLevel = HP_MAX; newDungeon((Math.random() * 1e9) | 0); }
+// A guard caught the character. They fight (off screen, in a cloud of dust): the guard is
+// knocked out, and the character loses as many hit points as that guard costs.
+function fight(e) {
+  knockOut(e);
+  hp = Math.max(0, hp - e.dmg);
+  fights.push({ x: (e.x + player.x) / 2, y: (e.y + player.y) / 2, t: fxT, dmg: e.dmg, seed: Math.random() * 100 });
+  stunUntil = clock + 0.45;
+  updateHP(true);
+}
+function updateHP(hit) {
+  const n = document.getElementById('hp'), f = document.getElementById('hp-fill'), box = document.getElementById('hp-box');
+  if (n) n.textContent = hp;
+  if (f) { f.style.width = (100 * hp / HP_MAX) + '%'; f.className = hp <= 20 ? 'low' : hp <= 50 ? 'mid' : ''; }
+  if (box && hit) { box.classList.remove('hit'); void box.offsetWidth; box.classList.add('hit'); }
+}
 // Made it onto the stairs?
 function checkExit() {
   const x = map.exit;
@@ -191,8 +215,8 @@ window.addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey) return; // leave system shortcuts (⌘-Tab, ⌘-R…) alone
   const k = keyName(e);
   keys.add(k);
-  if (k === 'r' && !e.repeat) newDungeon((Math.random() * 1e9) | 0);
-  if (k === 'enter' && !e.repeat) { if (state === 'caught') newDungeon(seed); else if (state === 'done') nextLevel(); }
+  if (k === 'r' && !e.repeat) { if (state === 'dead') startOver(); else { hp = hpAtLevel; newDungeon((Math.random() * 1e9) | 0); } }
+  if (k === 'enter' && !e.repeat) { if (state === 'dead') startOver(); else if (state === 'done') nextLevel(); }
   if (k === 'h' && !e.repeat) document.body.classList.toggle('hide-ui');
   if (k === 't' && !e.repeat) toggleTune();
   if (k === 'x' && !e.repeat) toggleHug();
@@ -248,7 +272,7 @@ function resolveCollisions(p) {
     // objects, and the character and the guards bump into each other (guards don't get in
     // each other's way)
     for (const o of map.props) pushOff(p, o);
-    if (p === player) { for (const o of enemies) pushOff(p, o); } else pushOff(p, player);
+    if (p === player) { for (const o of enemies) if (o.state !== 'down') pushOff(p, o); } else pushOff(p, player);
   }
 }
 
@@ -409,6 +433,7 @@ function update(dt) {
   }
   const ml = Math.hypot(mx, my);
   if (ml > 1) { mx /= ml; my /= ml; }
+  if (clock < stunUntil) mx = my = 0; // busy fighting
   // screen right = world (1,-1)/√2, screen down = world (1,1)/√2
   const wx = (mx + my) * Math.SQRT1_2, wy = (my - mx) * Math.SQRT1_2;
 
@@ -1183,6 +1208,54 @@ function crawlFigure(c) {
   };
 }
 
+// The fights: a cloud of dust while they last, the hit points lost rising from the
+// character, and the screen's edges flashing red. A dying red glow once the character is dead.
+function drawFights() {
+  const k = TW / 64;
+  fights = fights.filter(f => fxT - f.t < 1.6);
+  for (const f of fights) {
+    const t = fxT - f.t;
+    if (t < 0.7) { // dust
+      const a = t < 0.45 ? 1 : 1 - (t - 0.45) / 0.25;
+      const sx = PX(f.x, f.y), sy = PY(f.x, f.y, 0.45);
+      for (let i = 0; i < 14; i++) {
+        const ang = f.seed + i * 2.4 + t * (i % 2 ? 3 : -3), d = (6 + (i * 7) % 15) * k * (0.7 + t);
+        const r = (11 + (i * 5) % 8) * k * (0.8 + 0.6 * t);
+        ctx.beginPath(); ctx.arc(sx + Math.cos(ang) * d * 1.2, sy + Math.sin(ang) * d * 0.8, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${i % 3 ? '156,144,124' : '120,110,96'},${(0.72 * a).toFixed(3)})`; ctx.fill();
+      }
+      ctx.strokeStyle = `rgba(255,236,190,${(0.9 * a).toFixed(3)})`; ctx.lineWidth = 2 * k;
+      for (let i = 0; i < 4; i++) { // flashes of blows
+        if (Math.sin(t * 40 + i * 1.9 + f.seed) < 0.3) continue;
+        const ang = f.seed * 3 + i * 1.7 + Math.floor(t * 12), d = 16 * k;
+        const cx = sx + Math.cos(ang) * d, cy = sy + Math.sin(ang) * d * 0.7;
+        ctx.beginPath();
+        for (let j = 0; j < 3; j++) { const b = ang + j * 1.05; ctx.moveTo(cx - Math.cos(b) * 5 * k, cy - Math.sin(b) * 5 * k); ctx.lineTo(cx + Math.cos(b) * 5 * k, cy + Math.sin(b) * 5 * k); }
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+    }
+    if (t > 0.3) { // the damage, rising
+      const u = (t - 0.3) / 1.3;
+      ctx.save();
+      ctx.font = `700 ${Math.round(16 * k)}px ui-sans-serif, -apple-system, sans-serif`;
+      ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.lineJoin = 'round';
+      ctx.globalAlpha = Math.min(1, (1 - u) * 2.5);
+      const sx = PX(player.x, player.y), sy = PY(player.x, player.y, 0) - (60 + 30 * u) * k;
+      ctx.strokeStyle = 'rgba(20,4,4,0.85)'; ctx.strokeText(`−${f.dmg}`, sx, sy);
+      ctx.fillStyle = '#ff6a55'; ctx.fillText(`−${f.dmg}`, sx, sy);
+      ctx.restore();
+    }
+  }
+  const last = fights.length ? fxT - fights[fights.length - 1].t : 99;
+  const flash = Math.max(state === 'dead' ? 0.55 : 0, last < 0.8 ? 0.6 * (1 - last / 0.8) : 0);
+  if (flash > 0.01) {
+    const g = ctx.createRadialGradient(cw / 2, ch / 2, Math.min(cw, ch) * 0.3, cw / 2, ch / 2, Math.hypot(cw, ch) * 0.6);
+    g.addColorStop(0, 'rgba(160,20,10,0)'); g.addColorStop(1, `rgba(160,20,10,${flash.toFixed(3)})`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, cw, ch);
+  }
+}
+
 const W2S = (dx, dy) => [(dx - dy) * hw, (dx + dy) * hh]; // a world offset on the ground -> screen
 function drawPlayer(ghost) {
   const k = TW / 64;
@@ -1290,10 +1363,10 @@ function render(vis) {
   const ents = [];
   for (const e of enemies) {
     if (e.shown) ents.push({ d: e.x + e.y, draw: () => drawEnemy(e) });
-    else if (S.revealAll) ents.push({ d: e.x + e.y, draw: () => drawEnemyMemory(e, e.x, e.y, e.facing, 0.55) });
+    else if (S.revealAll) ents.push({ d: e.x + e.y, draw: () => drawEnemyMemory(e, e.x, e.y, e.facing, 0.55, e.state === 'down') });
     else if (e.memKnown) {
       const a = 0.22 + 0.4 * Math.exp(-(clock - e.shownT) / 6);
-      ents.push({ d: e.memX + e.memY, draw: () => drawEnemyMemory(e, e.memX, e.memY, e.memFacing, a) });
+      ents.push({ d: e.memX + e.memY, draw: () => drawEnemyMemory(e, e.memX, e.memY, e.memFacing, a, e.memDown) });
     }
   }
   for (const p of map.props) {
@@ -1320,6 +1393,7 @@ function render(vis) {
   if (occluders.length) drawPlayer(occluders);
   drawWallContact();
   drawEnemyAlerts();
+  drawFights();
 
   // Cursor reticle on the ground
   if (lookMode === 'mouse' && mouse.has) {
@@ -1417,11 +1491,12 @@ const fpsEl = document.getElementById('fps');
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   setupView();
-  stateT += dt;
+  stateT += dt; fxT += dt;
   if (state === 'play') {
     clock += dt;
     update(dt);
-    if (updateEnemies(dt)) setState('caught');
+    for (const e of updateEnemies(dt)) fight(e);
+    if (hp <= 0) setState('dead');
     else checkExit();
   } else if (state === 'done' && stateT > 2.5) nextLevel();
   setupView();

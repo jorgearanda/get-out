@@ -3,7 +3,7 @@
 A first look at the core feel of a stealth roguelike: a diagonal (isometric) view of a
 grid-based dungeon, free movement within the grid, and a **cone of sight** you aim
 separately from where you walk. Each level has a flight of **stairs down** somewhere, and
-**guards** in some rooms; reach the stairs without getting caught. Sight and light are separate: the cone decides what you
+**guards** in some rooms; reach the stairs before the guards wear you down. Sight and light are separate: the cone decides what you
 see *now* (versus what you remember), while torches, braziers and an optional lantern
 decide how much there is to see. Places they've explored but can't see right now are
 drawn in outline. Places they've never seen aren't drawn at all.
@@ -49,8 +49,8 @@ keyboard there's no way to move yet.
 | `C` | Crawl, or stand back up |
 | `L` | Light or put out your lantern |
 | `V` | Cycle wall cutaway mode (Off / Near you / In sight) |
-| `Enter` | Once caught: try the level again. On the stairs: go straight to the next level |
-| `R` | Generate a new dungeon |
+| `Enter` | Once dead: start over from level 1. On the stairs: go straight to the next level |
+| `R` | Generate a new dungeon (you get back the health you had when you arrived on this level) |
 | `H` | Hide/show the panels |
 | `T` | Fold/unfold the settings panel |
 | Gamepad | Left stick moves, right stick looks (twin-stick) |
@@ -113,8 +113,17 @@ corridor, never in a doorway or a 1-wide corridor, and never near the start.
 - If you're not there when it arrives, it searches ("?"): it first looks the way you were
   heading, then keeps walking to nearby spots it hasn't checked lately, at the same speed,
   looking around at each, ranging further each time. It never goes back to its post.
-- A chasing guard that reaches you catches you, and the level is over (`Enter` to retry).
-  Guards are solid to you but walk through each other.
+- A chasing guard that reaches you catches you, and you fight. You don't see the fight,
+  only a cloud of dust for a moment, during which you can't move. The guard always loses
+  and stays out cold on the floor for the rest of the level (no cone, no sight, and you
+  can step over it). You always come away hurt: these guards cost exactly 20 hp each.
+  Other guards can catch you during a fight too.
+- Standing guards are solid to you; guards walk through each other.
+
+**Health.** You start with 100 hp, shown by the bar at the top, and it carries over from
+one level to the next with no healing yet. So you can survive four fights; the fifth kills
+you. Dead, you start over from level 1 at full health (`Enter`). Each guard has its own
+damage value (`dmg`, 20 for now), so tougher kinds can cost more later.
 
 You see a guard the way you see anything else: in your sight and lit, or up close in the
 dark (as a dim silhouette with cool contours). You also see the cone of a guard you can
@@ -161,7 +170,7 @@ remembers that choice.
 - **`src/game.js`**: input, movement and collision (a circle of radius 0.22 tiles against
   wall squares, so you can hug walls or walk down the middle of a corridor), the three
   movement modes (`toggleHug`, `toggleCrawl`, `updateHug`), lighting, and rendering.
-  The level's flow (playing, caught, done) lives here too.
+  The level's flow (playing, dead, done), health and the fights live here too.
   Everything is drawn in two layers: an outline layer for what's been explored, and a
   live layer limited to the visibility polygon and the seen wall stretches. On the live
   layer, the floor is drawn at full brightness and then multiplied by a light map (ambient
