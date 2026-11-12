@@ -82,6 +82,15 @@
   .hp.hit { animation: hit .6s; }
   @keyframes hit { 0%, 40% { color: #ff6a55; transform: scale(1.12); } 100% { transform: none; } }
   @keyframes pulse { 50% { opacity: .55; } }
+  .keys-box { display: none; }
+  .keys-box.has-keys { display: inline; }
+  .keys span { display: inline-block; vertical-align: -1px; margin-right: 2px; }
+  .toast {
+    position: fixed; top: calc(var(--top) + 40px); left: 50%; transform: translate(-50%, -6px); padding: 6px 14px; border-radius: 6px;
+    background: rgba(12, 15, 21, 0.85); border: 1px solid #3a3222; color: #e9dcc2; pointer-events: none; white-space: nowrap;
+    opacity: 0; transition: opacity .25s, transform .25s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
   .banner {
     position: fixed; top: 24%; left: 50%; transform: translate(-50%, -50%); padding: 18px 28px; text-align: center;
     background: rgba(10, 12, 17, 0.88); border: 1px solid #2c3546; border-radius: 10px; pointer-events: none;
@@ -95,7 +104,8 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div class="hud">Level <b id="level">1</b> · <span id="hp-box" class="hp" title="Health: each fight with a guard costs 20"><i class="hp-bar"><i id="hp-fill"></i></i><b id="hp">100</b></span> · <span class="goal">find the stairs down</span> · <span id="gem" class="gem" title="Guards can only spot you in the light"></span></div>
+<div class="hud">Level <b id="level">1</b> · <span id="hp-box" class="hp" title="Health: each fight with a guard costs 20"><i class="hp-bar"><i id="hp-fill"></i></i><b id="hp">100</b></span><span class="keys-box"> · <span id="keys" class="keys"></span></span> · <span class="goal">find the stairs down</span> · <span id="gem" class="gem" title="Guards can only spot you in the light"></span></div>
+<div id="toast" class="toast"></div>
 <div id="banner" class="banner" hidden><div class="b-title"></div><div class="b-sub"></div></div>
 
 <div id="help" class="panel">
@@ -148,6 +158,7 @@
   </div>
 </div>
 
+<script src="src/templates.js"></script>
 <script src="src/dungeon.js"></script>
 <script src="src/vision.js"></script>
 <script src="src/enemies.js"></script>

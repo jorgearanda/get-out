@@ -62,6 +62,9 @@ let hp = HP_MAX, hpAtLevel = HP_MAX; // now, and on arriving at this level
 let fights = [];        // recent fights, for the dust cloud and the damage number
 let stunUntil = 0;      // the character can't move while a fight lasts
 let fxT = 0;            // time for effects, which keep going while the game is paused
+let heldKeys = [];      // keys picked up and not yet used
+let lockedTold = -99, toastT = null;
+const KEY_SVG = col => `<svg viewBox="0 0 24 12" width="22" height="11"><circle cx="5" cy="6" r="3.6" fill="none" stroke="${col}" stroke-width="2.2"/><path d="M8.5 6H22M18 6v4M21 6v3" stroke="${col}" stroke-width="2.2" fill="none"/></svg>`;
 
 // ---------------------------------------------------------------- exploration memory
 // Something counts as explored once it's been in view AND you could actually make it out:
@@ -94,6 +97,8 @@ function updateExplored(vis) {
     if (!p.seen && Math.abs(p.x - player.x) <= R && Math.abs(p.y - player.y) <= R &&
         (vis.sees(p.x, p.y) || vis.sees(p.x + 0.2, p.y + 0.2)) &&
         (p.type === 'brazier' || discernible(p.x, p.y))) p.seen = true;
+  for (const k of map.keys)
+    if (!k.seen && !k.taken && vis.sees(k.x, k.y) && (discernible(k.x, k.y) || lum(lightRGB(k.x, k.y)) > 0.04)) k.seen = true;
   for (const l of map.lights)
     if (!l.seen && Math.abs(l.x - player.x) <= R && Math.abs(l.y - player.y) <= R && vis.sees(l.x, l.y)) {
       l.seen = true;
@@ -115,7 +120,7 @@ function shouldDrawWall(cx, cy) {
 }
 function newDungeon(s) {
   seed = s >>> 0;
-  map = generateDungeon(seed);
+  map = generateDungeon(seed, level);
   player = {
     x: map.start.x, y: map.start.y, r: 0.22, facing: -Math.PI * 0.75, target: -Math.PI * 0.75, vx: 0, vy: 0, walk: 0, moving: 0,
     hug: null,           // set while pressed against a wall (see "movement modes")
@@ -129,6 +134,9 @@ function newDungeon(s) {
   seenStamp = new Int32Array(map.W * map.H);
   explored = new Uint8Array(map.W * map.H);
   for (const p of map.props) p.seen = false;
+  for (const k of map.keys) { k.seen = false; k.taken = false; }
+  heldKeys = []; lockedTold = -99;
+  updateKeysHUD();
   map.torchWalls = new Set();
   map.lights.forEach((l, i) => {
     l.seen = false; l.vis = null; l.phase = i * 2.39; l.flick = 1;
@@ -249,26 +257,31 @@ document.addEventListener('gesturechange', e => { e.preventDefault(); setZoom(pi
 document.addEventListener('gestureend', e => e.preventDefault());
 
 // ---------------------------------------------------------------- physics
+// Solid things in a grid square, as boxes: a wall fills it; furniture takes up part of it
+function forSolids(cx, cy, f) {
+  if (map.isWall(cx, cy)) { f(cx, cy, cx + 1, cy + 1); return; }
+  const bs = map.furnBoxes[cy * map.W + cx];
+  if (bs) for (const b of bs) f(b[0], b[1], b[2], b[3]);
+}
+function pushOutOfBox(p, x0, y0, x1, y1) {
+  const nx = Math.max(x0, Math.min(x1, p.x)), ny = Math.max(y0, Math.min(y1, p.y));
+  const dx = p.x - nx, dy = p.y - ny, d2 = dx * dx + dy * dy;
+  if (d2 >= p.r * p.r) return;
+  if (d2 > 1e-10) {
+    const d = Math.sqrt(d2);
+    p.x += dx / d * (p.r - d); p.y += dy / d * (p.r - d);
+  } else { // centre inside the box: push out along the shallowest axis
+    const l = p.x - x0, r = x1 - p.x, t = p.y - y0, b = y1 - p.y;
+    const m = Math.min(l, r, t, b);
+    if (m === l) p.x = x0 - p.r; else if (m === r) p.x = x1 + p.r;
+    else if (m === t) p.y = y0 - p.r; else p.y = y1 + p.r;
+  }
+}
 function resolveCollisions(p) {
+  const push = (x0, y0, x1, y1) => pushOutOfBox(p, x0, y0, x1, y1);
   for (let it = 0; it < 2; it++) {
-    for (let cy = Math.floor(p.y - p.r); cy <= Math.floor(p.y + p.r); cy++) {
-      for (let cx = Math.floor(p.x - p.r); cx <= Math.floor(p.x + p.r); cx++) {
-        if (!map.isWall(cx, cy)) continue;
-        const nx = Math.max(cx, Math.min(cx + 1, p.x)), ny = Math.max(cy, Math.min(cy + 1, p.y));
-        let dx = p.x - nx, dy = p.y - ny;
-        const d2 = dx * dx + dy * dy;
-        if (d2 >= p.r * p.r) continue;
-        if (d2 > 1e-10) {
-          const d = Math.sqrt(d2);
-          p.x += dx / d * (p.r - d); p.y += dy / d * (p.r - d);
-        } else { // centre inside the block: push out along the shallowest axis
-          const l = p.x - cx, r = cx + 1 - p.x, t = p.y - cy, b = cy + 1 - p.y;
-          const m = Math.min(l, r, t, b);
-          if (m === l) p.x = cx - p.r; else if (m === r) p.x = cx + 1 + p.r;
-          else if (m === t) p.y = cy - p.r; else p.y = cy + 1 + p.r;
-        }
-      }
-    }
+    for (let cy = Math.floor(p.y - p.r); cy <= Math.floor(p.y + p.r); cy++)
+      for (let cx = Math.floor(p.x - p.r); cx <= Math.floor(p.x + p.r); cx++) forSolids(cx, cy, push);
     // objects, and the character and the guards bump into each other (guards don't get in
     // each other's way)
     for (const o of map.props) pushOff(p, o);
@@ -516,7 +529,9 @@ function shine(l, x, y) { // shadow-cast area of a light: a full-circle "vision"
 }
 function prepareLights(t) {
   litList = [];
+  const reach = S.range + 3; // lights whose pool can't reach anything in sight don't matter
   for (const l of map.lights) {
+    if (Math.abs(l.x - eye.x) > reach + l.r || Math.abs(l.y - eye.y) > reach + l.r) continue;
     if (!l.vis) { l.col = LIGHT_COL[l.kind]; l.vis = shine(l, l.x, l.y); }
     l.flick = 1 + 0.06 * Math.sin(t * 7.3 + l.phase) + 0.04 * Math.sin(t * 17.9 + l.phase * 2.1) + 0.025 * Math.sin(t * 31 + l.phase * 0.7);
     litList.push(l);
@@ -836,7 +851,7 @@ function wallHeight(cx, cy) {
 
 // A stretch of a south (bricksAlongX) or east wall face that the character sees, lit by the
 // light falling just in front of it. `known` = the wall square is explored.
-function litFace(x0, y0, x1, y1, base, hz, bricksAlongX, known) {
+function litFace(x0, y0, x1, y1, base, hz, bricksAlongX, known, kind = 0) {
   const ax = PX(x0, y0), ay = PY(x0, y0, 0), bx = PX(x1, y1), by = PY(x1, y1, 0);
   const nx = bricksAlongX ? 0 : 0.03, ny = bricksAlongX ? 0.03 : 0;     // just in front
   const ix = bricksAlongX ? 0.03 : 0, iy = bricksAlongX ? 0 : 0.03;     // just inside the ends
@@ -847,24 +862,26 @@ function litFace(x0, y0, x1, y1, base, hz, bricksAlongX, known) {
   quad(ax, ay, bx, by, bx, by - hz, ax, ay - hz);
   ctx.fillStyle = g; ctx.fill();
 
-  // Masonry
-  const rows = Math.max(1, Math.round(hz / zs * 4));
-  ctx.beginPath();
-  for (let k = 1; k < rows; k++) {
-    const dz = hz * k / rows;
-    ctx.moveTo(ax, ay - dz); ctx.lineTo(bx, by - dz);
-  }
-  const t0 = bricksAlongX ? x0 : y0, t1 = bricksAlongX ? x1 : y1;
-  for (let k = 0; k < rows; k++) {
-    const off = (k % 2) * 0.25;
-    for (let t = Math.ceil((t0 - off) * 2) / 2 + off; t < t1; t += 0.5) {
-      if (t <= t0) continue;
-      const x = bricksAlongX ? t : x0, y = bricksAlongX ? y0 : t;
-      const sx = PX(x, y), sy = PY(x, y, 0);
-      ctx.moveTo(sx, sy - hz * k / rows); ctx.lineTo(sx, sy - hz * (k + 1) / rows);
+  if (kind) wallPattern(kind, ax, ay, bx, by, hz, x0, y0, x1, y1, bricksAlongX, L0, L1);
+  else { // masonry
+    const rows = Math.max(1, Math.round(hz / zs * 4));
+    ctx.beginPath();
+    for (let k = 1; k < rows; k++) {
+      const dz = hz * k / rows;
+      ctx.moveTo(ax, ay - dz); ctx.lineTo(bx, by - dz);
     }
+    const t0 = bricksAlongX ? x0 : y0, t1 = bricksAlongX ? x1 : y1;
+    for (let k = 0; k < rows; k++) {
+      const off = (k % 2) * 0.25;
+      for (let t = Math.ceil((t0 - off) * 2) / 2 + off; t < t1; t += 0.5) {
+        if (t <= t0) continue;
+        const x = bricksAlongX ? t : x0, y = bricksAlongX ? y0 : t;
+        const sx = PX(x, y), sy = PY(x, y, 0);
+        ctx.moveTo(sx, sy - hz * k / rows); ctx.lineTo(sx, sy - hz * (k + 1) / rows);
+      }
+    }
+    ctx.strokeStyle = 'rgba(30,24,18,0.35)'; ctx.lineWidth = 1; ctx.stroke();
   }
-  ctx.strokeStyle = 'rgba(30,24,18,0.35)'; ctx.lineWidth = 1; ctx.stroke();
   const lc = Math.max(lightClarity(lum(L0)), lightClarity(lum(L1)));
   ctx.beginPath(); ctx.moveTo(ax, ay - hz); ctx.lineTo(bx, by - hz);
   ctx.strokeStyle = `rgba(255,240,215,${0.25 * lc})`; ctx.stroke();
@@ -920,9 +937,10 @@ function drawWall(cx, cy, vis) {
   // Lit version, only for the stretches of face the character actually sees
   const known = isExplored(cx, cy);
   const ivS = hS === 0 && vis.faces.get(idx * 4 + FACE_S);
-  if (ivS) for (const [t0, t1] of ivS) litFace(cx + t0, cy + 1, cx + t1, cy + 1, COL.wallS, hz, true, known);
+  const kind = map.wallKind[idx], look = WALL_LOOK[kind];
+  if (ivS) for (const [t0, t1] of ivS) litFace(cx + t0, cy + 1, cx + t1, cy + 1, look ? look.s : COL.wallS, hz, true, known, kind);
   const ivE = hE === 0 && vis.faces.get(idx * 4 + FACE_E);
-  if (ivE) for (const [t0, t1] of ivE) litFace(cx + 1, cy + t0, cx + 1, cy + t1, COL.wallE, hz, false, known);
+  if (ivE) for (const [t0, t1] of ivE) litFace(cx + 1, cy + t0, cx + 1, cy + t1, look ? look.e : COL.wallE, hz, false, known, kind);
   // Drawn after the character, so in front: does it overlap them on screen?
   if (playerBox && h > 0.3) {
     const b = playerBox;
@@ -939,12 +957,79 @@ function drawWall(cx, cy, vis) {
       if (v > best) { best = v; L = l; at = [fx, fy]; }
     }
     quad(Ax, Ay - hz, Bx, By - hz, Cx, Cy - hz, Dx, Dy - hz);
-    ctx.fillStyle = rgbL(COL.wallTop, L, 0.9); ctx.fill();
+    ctx.fillStyle = rgbL(look ? look.top : COL.wallTop, L, 0.9); ctx.fill();
     const v = seeing(at[0], at[1], known);
     edges();
     ctx.strokeStyle = `rgba(255,240,215,${0.6 * v.light})`; ctx.stroke();
     if (v.memory > 0.02) { ctx.strokeStyle = `rgba(${MEMORY},${v.memory})`; ctx.stroke(); }
     if (v.contour > 0.02) { ctx.strokeStyle = `rgba(${CONTOUR},${v.contour * 0.55})`; ctx.stroke(); }
+  }
+  if (kind === 3 && (known || S.revealAll)) {
+    const d = map.doors.find(d => d.x === cx && d.y === cy);
+    if (d) {
+      const k = TW / 64, x = PX(cx + 0.5, cy + 0.5), y = PY(cx + 0.5, cy + 0.5, h);
+      ctx.beginPath(); ctx.arc(x, y - 2.2 * k, 2.6 * k, Math.PI, 0); ctx.strokeStyle = d.col; ctx.lineWidth = 1.6 * k; ctx.stroke();
+      ctx.fillStyle = d.col; ctx.fillRect(x - 3.6 * k, y - 2.2 * k, 7.2 * k, 5.4 * k);
+      ctx.fillStyle = '#1a120a'; ctx.fillRect(x - 0.7 * k, y - 0.6 * k, 1.4 * k, 2.6 * k);
+      ctx.lineWidth = 1;
+    }
+  }
+}
+
+// What walls other than stone look like: bookshelves, stacks of crates, and locked doors
+const WALL_LOOK = [
+  null,
+  { s: [92, 62, 40], e: [74, 50, 32], top: [100, 70, 46] },
+  { s: [146, 108, 66], e: [116, 86, 52], top: [156, 120, 76] },
+  { s: [122, 82, 46], e: [100, 66, 38], top: [104, 72, 44] },
+];
+const BOOKS = [[128, 44, 38], [52, 72, 116], [62, 100, 64], [150, 118, 62], [96, 60, 96], [70, 52, 40]];
+function wallPattern(kind, ax, ay, bx, by, hz, x0, y0, x1, y1, alongX, L0, L1) {
+  const L = [(L0[0] + L1[0]) / 2, (L0[1] + L1[1]) / 2, (L0[2] + L1[2]) / 2];
+  const t0 = alongX ? x0 : y0, t1 = alongX ? x1 : y1;
+  const at = (t, z) => { const x = alongX ? t : x0, y = alongX ? y0 : t; return [PX(x, y), PY(x, y, 0) - z]; };
+  const line = (ta, za, tb, zb) => { const [p, q] = at(ta, za), [r, u] = at(tb, zb); ctx.moveTo(p, q); ctx.lineTo(r, u); };
+  if (kind === 1) { // shelves of books
+    const shelves = 4;
+    for (let r = 0; r < shelves; r++) {
+      const zb = hz * (r + 0.08) / shelves, zt = hz * (r + 0.86) / shelves;
+      const h = hash2(Math.floor(alongX ? y0 : x0) * 7 + r, Math.floor(t0 * 13), 77);
+      const rnd = mulberry32(h);
+      for (let t = Math.floor(t0 * 12) / 12; t < t1; t += 1 / 12) {
+        const ta = Math.max(t, t0), tb = Math.min(t + 1 / 12, t1);
+        if (tb <= ta) continue;
+        const c = BOOKS[Math.floor(rnd() * BOOKS.length)], top = zt - rnd() * (zt - zb) * 0.3;
+        const [p, q] = at(ta + 0.005, zb), [r2, u] = at(tb - 0.005, zb);
+        ctx.beginPath(); ctx.moveTo(p, q); ctx.lineTo(r2, u); ctx.lineTo(r2, u - (top - zb)); ctx.lineTo(p, q - (top - zb)); ctx.closePath();
+        ctx.fillStyle = rgbL(c, L); ctx.fill();
+      }
+    }
+    ctx.beginPath();
+    for (let r = 0; r <= shelves; r++) line(t0, hz * r / shelves, t1, hz * r / shelves);
+    ctx.strokeStyle = rgbL([60, 40, 26], L); ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
+  } else if (kind === 2) { // crates: boards, and the edges of each crate
+    ctx.beginPath();
+    for (const z of [0.5]) line(t0, hz * z, t1, hz * z);
+    for (let t = Math.ceil(t0 * 2) / 2; t < t1; t += 0.5) if (t > t0) line(t, 0, t, hz);
+    ctx.strokeStyle = 'rgba(50,32,18,0.7)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const z of [0.17, 0.33, 0.67, 0.83]) line(t0, hz * z, t1, hz * z);
+    ctx.strokeStyle = 'rgba(50,32,18,0.3)'; ctx.stroke();
+  } else if (kind === 3) { // door: planks, iron bands, a lock
+    ctx.beginPath();
+    for (let t = Math.ceil(t0 * 6) / 6; t < t1; t += 1 / 6) if (t > t0) line(t, 0, t, hz * 0.97);
+    ctx.strokeStyle = 'rgba(40,24,12,0.55)'; ctx.stroke();
+    ctx.beginPath();
+    for (const z of [0.22, 0.78]) line(t0, hz * z, t1, hz * z);
+    ctx.strokeStyle = rgbL([60, 60, 66], L); ctx.lineWidth = 3; ctx.stroke(); ctx.lineWidth = 1;
+    const d = map.doors.find(d => (alongX ? d.y === y0 - 1 && Math.floor(t0) === d.x : d.x === x0 - 1 && Math.floor(t0) === d.y));
+    const tm = Math.floor(t0) + 0.68;
+    if (d && tm > t0 && tm < t1) {
+      const [p, q] = at(tm, hz * 0.45);
+      const k = TW / 64;
+      ctx.fillStyle = d.col; ctx.fillRect(p - 3 * k, q - 4 * k, 6 * k, 8 * k);
+      ctx.fillStyle = '#140d07'; ctx.beginPath(); ctx.arc(p, q - 1 * k, 1.2 * k, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(p - 0.6 * k, q - 1 * k, 1.2 * k, 3.4 * k);
+    }
   }
 }
 
@@ -986,6 +1071,167 @@ function drawBarrel(b, vis) {
     body(); ctx.stroke();
     ctx.beginPath(); ctx.ellipse(cx, ty, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
   }
+}
+
+// ---------------------------------------------------------------- furniture
+// Tables, beds, crates and benches are low boxes: they block the way but not the view.
+// Neighbouring pieces of the same kind join up (a long table, a bed two squares long).
+// Iron bars are rods along the middle of their square, joined to bars or walls alongside.
+const FURN_H = [0, 0.34, 0.2, 0.42, 0.2, 0.86];
+const FURN_COL = [null, [138, 96, 58], [110, 78, 50], [152, 114, 70], [122, 86, 52]];
+const BLANKET = [86, 98, 122], PILLOW = [176, 168, 150], IRON = [92, 96, 104];
+function drawFurniture(cx, cy, vis) {
+  const W = map.W, idx = cy * W + cx, f = map.furn[idx];
+  const live = vis.sees(cx + 0.5, cy + 0.5) || vis.sees(cx + 0.2, cy + 0.2) || vis.sees(cx + 0.8, cy + 0.8) ||
+    vis.sees(cx + 0.2, cy + 0.8) || vis.sees(cx + 0.8, cy + 0.2);
+  const known = isExplored(cx, cy);
+  const L = live ? lightRGB(cx + 0.5, cy + 0.5) : null;
+  const v = live ? seeing(cx + 0.5, cy + 0.5, known) : null;
+  if (f === 5) return drawBars(cx, cy, live, L, v);
+  const k = TW / 64;
+  for (const [x0, y0, x1, y1] of map.furnBoxes[idx]) {
+    const mW = x0 <= cx + 1e-6, mE = x1 >= cx + 1 - 1e-6, mN = y0 <= cy + 1e-6, mS = y1 >= cy + 1 - 1e-6;
+    const h = FURN_H[f];
+    const P = (x, y, z) => [PX(x, y), PY(x, y, z)];
+    const [ax, ay] = P(x0, y0, h), [bx, by] = P(x1, y0, h), [qx, qy] = P(x1, y1, h), [dx, dy] = P(x0, y1, h);
+    const [bx0, by0] = P(x1, y0, 0), [qx0, qy0] = P(x1, y1, 0), [dx0, dy0] = P(x0, y1, 0);
+    const base = FURN_COL[f];
+    const fill = (pts, col) => { ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fillStyle = col; ctx.fill(); };
+    if (live) {
+      ctx.fillStyle = 'rgba(0,0,0,0.3)'; // a shadow on the floor, to the lower right
+      const [sx, sy] = P(x1 + 0.06, y1 + 0.06, 0);
+      ctx.beginPath(); ctx.moveTo(dx0, dy0); ctx.lineTo(sx, sy); ctx.lineTo(bx0, by0); ctx.lineTo(qx0, qy0); ctx.closePath(); ctx.fill();
+    }
+    if (!mS) fill([[dx0, dy0], [qx0, qy0], [qx, qy], [dx, dy]], live ? rgbL(base, L, 0.78) : COL.wallSOut);
+    if (!mE) fill([[bx0, by0], [qx0, qy0], [qx, qy], [bx, by]], live ? rgbL(base, L, 0.6) : COL.wallEOut);
+    fill([[ax, ay], [bx, by], [qx, qy], [dx, dy]], live ? rgbL(base, L, 1.08) : COL.wallTopOut);
+    // details on top
+    if (live) {
+      ctx.beginPath();
+      if (f === 1) { // table boards, running along the table
+        const along = mW || mE ? 'x' : 'y';
+        for (const t of [0.33, 0.66]) {
+          if (along === 'x') { const yy = y0 + (y1 - y0) * t; ctx.moveTo(...P(x0, yy, h)); ctx.lineTo(...P(x1, yy, h)); }
+          else { const xx = x0 + (x1 - x0) * t; ctx.moveTo(...P(xx, y0, h)); ctx.lineTo(...P(xx, y1, h)); }
+        }
+        ctx.strokeStyle = 'rgba(50,30,16,0.45)'; ctx.stroke();
+      } else if (f === 2) { // bed: blanket, and a pillow at the head end
+        const i = 0.07, hb = h + 0.05;
+        fill([P(x0 + i, y0 + i, hb), P(x1 - i, y0 + i, hb), P(x1 - i, y1 - i, hb), P(x0 + i, y1 - i, hb)], rgbL(BLANKET, L));
+        const head = !mN && !mW;
+        if (head) {
+          const vert = mS || (!mE && !mW && !mS);
+          const px1 = vert ? x1 - i : x0 + 0.38, py1 = vert ? y0 + 0.38 : y1 - i;
+          fill([P(x0 + i + 0.04, y0 + i + 0.04, hb + 0.04), P(px1 - 0.04, y0 + i + 0.04, hb + 0.04), P(px1 - 0.04, py1, hb + 0.04), P(x0 + i + 0.04, py1, hb + 0.04)], rgbL(PILLOW, L));
+        }
+      } else if (f === 3) { // crate: boards and a brace across each face
+        if (!mS) { ctx.moveTo(dx0, dy0); ctx.lineTo(qx, qy); }
+        if (!mE) { ctx.moveTo(bx0, by0); ctx.lineTo(qx, qy); }
+        ctx.moveTo(ax, ay); ctx.lineTo(qx, qy);
+        ctx.strokeStyle = 'rgba(60,38,20,0.5)'; ctx.stroke();
+      }
+    }
+    // edges, leaving out the seams where pieces join
+    ctx.beginPath();
+    if (!mN) { ctx.moveTo(ax, ay); ctx.lineTo(bx, by); }
+    if (!mE) { ctx.moveTo(bx, by); ctx.lineTo(qx, qy); ctx.moveTo(bx0, by0); ctx.lineTo(qx0, qy0); if (!mN) { ctx.moveTo(bx0, by0); ctx.lineTo(bx, by); } }
+    if (!mS) { ctx.moveTo(qx, qy); ctx.lineTo(dx, dy); ctx.moveTo(qx0, qy0); ctx.lineTo(dx0, dy0); if (!mW) { ctx.moveTo(dx0, dy0); ctx.lineTo(dx, dy); } }
+    if (!mE || !mS) { ctx.moveTo(qx0, qy0); ctx.lineTo(qx, qy); }
+    if (!mW) { ctx.moveTo(dx, dy); ctx.lineTo(ax, ay); }
+    if (live) {
+      ctx.strokeStyle = 'rgba(28,18,10,0.7)'; ctx.lineWidth = 1; ctx.stroke();
+      if (v.memory > 0.02) { ctx.strokeStyle = `rgba(${MEMORY},${v.memory})`; ctx.stroke(); }
+      if (v.contour > 0.02) { ctx.strokeStyle = `rgba(${CONTOUR},${v.contour * 0.6})`; ctx.stroke(); }
+    } else { ctx.strokeStyle = COL.wallLine; ctx.lineWidth = 1; ctx.stroke(); }
+  }
+}
+function drawBars(cx, cy, live, L, v) {
+  const k = TW / 64, h = FURN_H[5], c = 0.5;
+  const joins = (dx, dy) => map.furn[(cy + dy) * map.W + cx + dx] === 5 || map.isWall(cx + dx, cy + dy);
+  const rods = [[cx + c, cy + c]], rails = [];
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    if (!joins(dx, dy)) continue;
+    rods.push([cx + c + dx * 0.25, cy + c + dy * 0.25], [cx + c + dx * 0.5, cy + c + dy * 0.5]);
+    rails.push([cx + c, cy + c, cx + c + dx * 0.5, cy + c + dy * 0.5]);
+  }
+  ctx.beginPath();
+  for (const [x, y] of rods) { ctx.moveTo(PX(x, y), PY(x, y, 0)); ctx.lineTo(PX(x, y), PY(x, y, h)); }
+  for (const [x0, y0, x1, y1] of rails) for (const z of [0.06, h * 0.55, h]) { ctx.moveTo(PX(x0, y0), PY(x0, y0, z)); ctx.lineTo(PX(x1, y1), PY(x1, y1, z)); }
+  if (live) {
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 2.8 * k; ctx.stroke();
+    ctx.strokeStyle = rgbL(IRON, L, 1.2); ctx.lineWidth = 1.6 * k; ctx.stroke();
+    if (v.contour > 0.02) { ctx.strokeStyle = `rgba(${CONTOUR},${v.contour * 0.7})`; ctx.lineWidth = 1; ctx.stroke(); }
+    if (v.memory > 0.02) { ctx.strokeStyle = `rgba(${MEMORY},${v.memory})`; ctx.lineWidth = 1; ctx.stroke(); }
+  } else { ctx.strokeStyle = COL.wallLine; ctx.lineWidth = 1; ctx.stroke(); }
+  ctx.lineWidth = 1;
+}
+
+// ---------------------------------------------------------------- keys and locked doors
+// A locked door's key lies somewhere in the template the door belongs to. Walking over a
+// key picks it up; walking up to its door with it opens the door for good.
+function toast(msg) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('show'), 2600);
+}
+function updateKeysHUD() {
+  const el = document.getElementById('keys');
+  if (!el) return;
+  el.innerHTML = heldKeys.map(k => `<span title="The ${k.name} key">${KEY_SVG(k.col)}</span>`).join('');
+  el.parentElement.classList.toggle('has-keys', heldKeys.length > 0);
+}
+function updateKeysAndDoors() {
+  for (const k of map.keys) {
+    if (k.taken || Math.hypot(player.x - k.x, player.y - k.y) > 0.45) continue;
+    k.taken = true; heldKeys.push(k); updateKeysHUD();
+    toast(`You found the ${k.name} key`);
+  }
+  for (const d of map.doors) {
+    if (d.open) continue;
+    const reach = 0.5 + player.r + 0.1;
+    if (Math.abs(player.x - d.x - 0.5) > reach || Math.abs(player.y - d.y - 0.5) > reach) continue;
+    const k = heldKeys.find(k => k.id === d.id);
+    if (k) openDoor(d, k);
+    else if (clock - lockedTold > 4) {
+      lockedTold = clock;
+      const room = map.slots.find(s => s.slot === d.slot);
+      toast(`Locked. Its ${d.name} key must be somewhere in the ${room ? room.name.toLowerCase() : 'rooms nearby'}.`);
+    }
+  }
+}
+function openDoor(d, k) {
+  const i = d.y * map.W + d.x;
+  map.grid[i] = 0; map.wallKind[i] = 0; d.open = true;
+  explored[i] = 1;
+  heldKeys = heldKeys.filter(h => h !== k); updateKeysHUD();
+  for (const l of map.lights) if (Math.hypot(l.x - d.x - 0.5, l.y - d.y - 0.5) < l.r + 1.5) l.vis = null; // light now gets through
+  toast(`The ${d.name} key opens the door`);
+}
+// A key lying on the floor, glinting when there's light on it
+function drawKey(key, vis) {
+  const k = TW / 64, live = vis.sees(key.x, key.y);
+  const a = key.rot || (key.rot = (hash2(Math.floor(key.x * 10), Math.floor(key.y * 10), 5) % 628) / 100);
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const P = (u, w) => [PX(key.x + u * ca - w * sa, key.y + u * sa + w * ca), PY(key.x + u * ca - w * sa, key.y + u * sa + w * ca, 0.02)];
+  const shape = () => {
+    ctx.beginPath();
+    const [rx, ry] = P(-0.13, 0);
+    ctx.ellipse(rx, ry, 0.075 * hw * Math.SQRT2, 0.075 * hh * Math.SQRT2, 0, 0, Math.PI * 2);
+    ctx.moveTo(...P(-0.06, 0)); ctx.lineTo(...P(0.2, 0));
+    ctx.moveTo(...P(0.15, 0)); ctx.lineTo(...P(0.15, 0.07));
+    ctx.moveTo(...P(0.2, 0)); ctx.lineTo(...P(0.2, 0.06));
+  };
+  if (!live) { shape(); ctx.strokeStyle = `rgba(${MEMORY},0.8)`; ctx.lineWidth = 1.4 * k; ctx.stroke(); ctx.lineWidth = 1; return; }
+  const L = lightRGB(key.x, key.y), lc = lightClarity(lum(L)), dc = darkClarity(key.x, key.y);
+  shape(); ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 3.4 * k; ctx.stroke();
+  ctx.strokeStyle = key.col; ctx.globalAlpha = Math.max(0.35, lc); ctx.lineWidth = 2 * k; ctx.stroke();
+  ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  // a glint, so it catches the eye
+  const g = 0.5 + 0.5 * Math.sin(clock * 3.2 + key.x), [gx, gy] = P(-0.13, 0);
+  const r = (3 + 3 * g) * k * Math.max(0.4, Math.max(lc, dc));
+  ctx.strokeStyle = `rgba(255,244,210,${(0.35 + 0.5 * g) * Math.max(0.5, lc)})`;
+  ctx.beginPath(); ctx.moveTo(gx - r, gy - 6 * k); ctx.lineTo(gx + r, gy - 6 * k); ctx.moveTo(gx, gy - 6 * k - r); ctx.lineTo(gx, gy - 6 * k + r); ctx.stroke();
 }
 
 // ---------------------------------------------------------------- light fixtures
@@ -1369,6 +1615,10 @@ function render(vis) {
       ents.push({ d: e.memX + e.memY, draw: () => drawEnemyMemory(e, e.memX, e.memY, e.memFacing, a, e.memDown) });
     }
   }
+  for (const key of map.keys) {
+    if (key.taken || (!key.seen && !S.revealAll) || !onScreen(Math.floor(key.x), Math.floor(key.y))) continue;
+    ents.push({ d: key.x + key.y - 0.3, draw: () => drawKey(key, vis) });
+  }
   for (const p of map.props) {
     if (!onScreen(Math.floor(p.x), Math.floor(p.y))) continue;
     if (p.type !== 'barrel' || (!p.seen && !S.revealAll)) continue;
@@ -1386,7 +1636,8 @@ function render(vis) {
     while (ei < ents.length && ents[ei].d < s + 1) ents[ei++].draw();
     for (let cx = Math.max(0, s - (map.H - 1)); cx <= Math.min(map.W - 1, s); cx++) {
       const cy = s - cx;
-      if (map.isWall(cx, cy) && onScreen(cx, cy) && shouldDrawWall(cx, cy)) drawWall(cx, cy, vis);
+      if (map.isWall(cx, cy)) { if (onScreen(cx, cy) && shouldDrawWall(cx, cy)) drawWall(cx, cy, vis); }
+      else if (map.furn[cy * map.W + cx] && onScreen(cx, cy) && isExplored(cx, cy)) drawFurniture(cx, cy, vis);
     }
   }
   while (ei < ents.length) ents[ei++].draw();
@@ -1495,6 +1746,7 @@ function frame(now) {
   if (state === 'play') {
     clock += dt;
     update(dt);
+    updateKeysAndDoors();
     for (const e of updateEnemies(dt)) fight(e);
     if (hp <= 0) setState('dead');
     else checkExit();

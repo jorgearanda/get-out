@@ -134,14 +134,18 @@ function findPath(x0, y0, x1, y1) {
   }
   return null;
 }
-// Is there room for a body of radius r here? (walls, objects and the stairwell)
+// Is there room for a body of radius r here? (walls, furniture, objects and the stairwell)
 function roomFor(x, y, r) {
+  let ok = true;
+  const test = (x0, y0, x1, y1) => {
+    const nx = Math.max(x0, Math.min(x1, x)), ny = Math.max(y0, Math.min(y1, y));
+    if ((x - nx) ** 2 + (y - ny) ** 2 < r * r) ok = false;
+  };
   for (let cy = Math.floor(y - r); cy <= Math.floor(y + r); cy++)
     for (let cx = Math.floor(x - r); cx <= Math.floor(x + r); cx++) {
-      const hole = map.exit && cx === map.exit.x && cy === map.exit.y;
-      if (!hole && !map.isWall(cx, cy)) continue;
-      const nx = Math.max(cx, Math.min(cx + 1, x)), ny = Math.max(cy, Math.min(cy + 1, y));
-      if ((x - nx) ** 2 + (y - ny) ** 2 < r * r) return false;
+      if (map.exit && cx === map.exit.x && cy === map.exit.y) test(cx, cy, cx + 1, cy + 1);
+      else forSolids(cx, cy, test);
+      if (!ok) return false;
     }
   for (const o of map.props) if (Math.hypot(x - o.x, y - o.y) < r + o.r) return false;
   return true;

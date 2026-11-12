@@ -2,8 +2,10 @@
 
 A first look at the core feel of a stealth roguelike: a diagonal (isometric) view of a
 grid-based dungeon, free movement within the grid, and a **cone of sight** you aim
-separately from where you walk. Each level has a flight of **stairs down** somewhere, and
-**guards** in some rooms; reach the stairs before the guards wear you down. Sight and light are separate: the cone decides what you
+separately from where you walk. Each level is put together from a catalog of hand-made
+**room templates** (cell blocks, barracks, a mess hall, catacombs…), with a flight of
+**stairs down** at the far end, **guards** at their posts, and at least one **locked door**
+whose key you have to find; reach the stairs before the guards wear you down. Sight and light are separate: the cone decides what you
 see *now* (versus what you remember), while torches, braziers and an optional lantern
 decide how much there is to see. Places they've explored but can't see right now are
 drawn in outline. Places they've never seen aren't drawn at all.
@@ -73,9 +75,11 @@ keyboard there's no way to move yet.
   - `X` lets go. Moving straight away from the wall also lets go, but only after 0.3 s of
     resistance (the body eases off the wall a little meanwhile).
 
-**Light and sight.** The dungeon is dark apart from its light sources: braziers in some
-rooms, torches on many walls, and a lantern you can carry (`L`). Almost every room is lit;
-about one in thirty has no light at all. What you see depends on both:
+**Light and sight.** The dungeon is dark apart from its light sources: braziers placed by
+the templates (they reach 8 tiles), torches along the walls (6.5 tiles; each template asks
+for 10 to 16, hung where they're furthest from the lights already up), and a lantern you
+can carry (`L`). About two thirds of the floor is well lit; the catacombs are the dimmest,
+at a bit under half. What you see depends on both:
 
 | | In your sight | Out of sight |
 |---|---|---|
@@ -90,20 +94,54 @@ braziers light themselves, so you notice them whenever they're in view. The char
 lit like everything else, and keeps a faint cool outline so you can always find them. The
 lantern lights a warm pool about 4 tiles across around you.
 
-**Stairs and guards.** The stairs are in the room farthest from where you start, sunk into
+**Levels.** Each level is 6 to 8 templates (9 from level 3 on), each 25×25 tiles, laid out
+on a 4×3 or 3×4 grid. They grow from one another like a branching tree, so the level
+winds; neighbours share a wall with a doorway in the middle (and sometimes more doorways,
+where both templates offer one at the same spot), and a few extra doorways make loops. You
+arrive in the Landing at one end of the longest route through the level, and the stairs are
+in the template at the other end. The templates are turned and mirrored at random, so the
+same one looks different from level to level.
+
+| Template | What's in it |
+|---|---|
+| Landing | Where you arrive: a quiet hall with storerooms, no guards |
+| Cell block | Barred cells either side of a guarded hall. **Locked**: the key is in an open cell or by the warden's desk |
+| Barracks | Two dormitories of beds, an armoury corridor between them |
+| Mess hall | Long tables and benches, a kitchen at the back |
+| Colonnade | A dim hall full of pillars to slip between |
+| Catacombs | Twisting 1-wide passages, new every time, round a crypt. **Locked**: the key is in the crypt |
+| Storehouse | Aisles between tall stacks of crates |
+| Chapel | Pews up to an altar, side aisles behind pillars, a porch |
+| Rotunda | A ring corridor round a chamber with a great brazier, vaults in the corners |
+| Gatehouse | A courtyard watched through barred windows from a guardhouse. **Locked**: the captain keeps the key |
+| Archive | Rows of tall bookshelves round a reading room |
+
+**Locked doors and keys.** One template on the route to the stairs (two, sometimes, from
+level 3) has a locked side, and it's turned so that side faces onward. Its key lies
+somewhere inside that same template. Walk over a key to pick it up (it glints when there's
+light on it, and shows at the top of the screen); walk up to its door with it and the door
+opens for good. A locked door has a lock on top in its key's colour. The extra doorways
+never lead round a lock.
+
+**Furniture.** Tables, benches, beds and low crates block your way but not anyone's view.
+Iron bars block the way too, but you and the guards can see through them. Bookshelves and
+stacks of crates are as tall as walls and block both.
+
+**Stairs and guards.** The stairs are in the template at the far end of the level, sunk into
 the floor with a torch over them when there's a wall to hang one on. Step onto them and the
 level is done; a new, deeper level starts after a moment. Once you've seen the stairs they
 keep a gold outline.
 
-Guards stand at posts in about half the rooms (most likely by the stairs) and the odd wide
-corridor, never in a doorway or a 1-wide corridor, and never near the start.
+Guards stand at the posts the templates mark. Each post is manned at random (60–75% of the
+time, depending on the template, and 5 points more for each level down), never near the
+start; about 12 guards per level.
 
 - Each guard has its own cone of sight (80° wide, 8 tiles long). At its post it doesn't
   stare in one direction: each guard has a habit of its own, either sweeping its gaze
   smoothly back and forth, turning between two or three set headings in turn, or glancing
   about at random.
 - A guard only spots you inside its cone, with a clear line of sight to your body, and only
-  if enough light falls on you (10% by default, about what a torch gives within 3 tiles; a
+  if enough light falls on you (10% by default, about what a torch gives within 4.5 tiles; a
   lit lantern always gives you away). Your head doesn't count: leaning out round a corner
   while pressed to a wall is safe. Crawling doesn't matter to them yet. The banner at the
   top shows whether you're "in the light" (visible to guards) or "in shadow".
@@ -143,18 +181,23 @@ remembers that choice.
 
 ## How it works
 
-- **`src/dungeon.js`**: seeded generator. It places rooms, joins them with a minimum
-  spanning tree of 1-wide (sometimes 2-wide) corridors plus a few loops, then furnishes
-  some rooms with pillars, partition walls or barrels. Furniture never touches a room's
-  outer ring of floor, so every layout stays fully connected. It puts the stairs in the
-  room farthest (in steps) from the start. Light sources come from their own random
-  stream: every room gets torches (up to six, on any wall face the camera sees), and
-  bigger rooms one or two braziers out in the middle (with open floor all round them),
-  since the torches can't reach their far side; about one room in thirty stays dark.
-  Corridors get torches too, about 59 lights per level in all. Guard posts come from a
-  third stream.
+- **`src/templates.js`**: the catalog of room templates, drawn as 25 rows of 25
+  characters (the legend is at the top of the file). Rows that mirror left to right can be
+  given as half a row. A template can mark connection points on its outer ring, guard
+  posts with their facing, key spots, good spots for the stairs, and a maze area that's
+  carved afresh each time. Adding a template is adding an entry here.
+- **`src/dungeon.js`**: the seeded level builder. It grows a tree of slots on the coarse
+  grid, picks the longest route through it (Landing at one end, stairs at the other), puts
+  a locked template on that route turned to face onward, fills the other slots with
+  different templates in random orientations, adds a few loops that don't get round a
+  lock, and stamps everything onto the tile grid: walls (stone, shelves, crates), locked
+  doors, furniture (with the boxes you bump into), barrels, braziers, posts and keys. Then
+  torches go on stone wall faces the camera sees, as many as the template asks for, each
+  where it's furthest from the lights already up (about 110 lights per level in all; only
+  those near enough to light anything in sight are worked out each frame), and guards fill posts from their own random stream.
 - **`src/enemies.js`**: the guards: their sight test (cone, range, then a ray), A* path
-  finding (8-way, no corner cutting, avoiding barrels, braziers and the stairwell), path
+  finding (8-way, no corner cutting, avoiding furniture, barrels, braziers and the
+  stairwell), path
   following that cuts straight across whenever there's room, the chase and search
   behaviour, and drawing them, their cones and their alerts.
 - **`src/vision.js`**: casts rays from the character through the grid, densely inside the
@@ -168,7 +211,8 @@ remembers that choice.
   The same code, run as a full circle from each light source, gives each light's
   shadow-cast pool. Fixed lights work it out once per dungeon; the lantern every frame.
 - **`src/game.js`**: input, movement and collision (a circle of radius 0.22 tiles against
-  wall squares, so you can hug walls or walk down the middle of a corridor), the three
+  wall squares and furniture boxes, so you can hug walls or walk down the middle of a
+  corridor), keys and locked doors, furniture drawing, the three
   movement modes (`toggleHug`, `toggleCrawl`, `updateHug`), lighting, and rendering.
   The level's flow (playing, dead, done), health and the fights live here too.
   Everything is drawn in two layers: an outline layer for what's been explored, and a
