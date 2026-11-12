@@ -1205,7 +1205,10 @@ function openDoor(d, k) {
   map.grid[i] = 0; map.wallKind[i] = 0; d.open = true;
   explored[i] = 1;
   heldKeys = heldKeys.filter(h => h !== k); updateKeysHUD();
-  for (const l of map.lights) if (Math.hypot(l.x - d.x - 0.5, l.y - d.y - 0.5) < l.r + 1.5) l.vis = null; // light now gets through
+  // Light now gets through: redo the shadows of the lights nearby (right away, since this
+  // frame's lighting already uses them)
+  for (const l of map.lights)
+    if (l.vis && Math.hypot(l.x - d.x - 0.5, l.y - d.y - 0.5) < l.r + 1.5) l.vis = shine(l, l.x, l.y);
   toast(`The ${d.name} key opens the door`);
 }
 // A key lying on the floor, glinting when there's light on it
